@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "empire-bc-security-fork"
-version = "5.11.7"
+version = "5.12.2"
 description = ""
 authors = ["BC Security <info@bc-security.org>"]
 readme = "README.md"
@@ -13,7 +13,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.10,<3.14"
 urllib3 = "^2.2.0"
 requests = "^2.31.0"
 iptools = "^0.7.0"

@@ -20,35 +20,34 @@
     using System.Management.Automation.Runspaces;
     using System.IO;
     using System.Reflection;
-    
+
     public static class Program
     {
-          public static void Main(string[] args)
+      public static void Main(string[] args)
+      {
+
+        PowerShell ps = PowerShell.Create();
+
+        try
+        {
+          var assembly = Assembly.GetExecutingAssembly();
+          var resourceName = "launcher.txt";
+
+          string[] names = assembly.GetManifestResourceNames();
+
+          using (StreamReader reader = new StreamReader(assembly.GetManifestResourceStream(resourceName)))
           {
-
-            PowerShell ps = PowerShell.Create();
-
-            try
-            {
-              var assembly = Assembly.GetExecutingAssembly();
-              var resourceName = "launcher.txt";
-
-              string[] names = assembly.GetManifestResourceNames();
-
-              using (StreamReader reader = new StreamReader(assembly.GetManifestResourceStream(resourceName)))
-              {
-                  string script = reader.ReadToEnd();
-                  ps.AddScript(script);
-              }
-              ps.Invoke();
-    
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine("Error: " + e.Message.ToString());
-            }
-
+            string script = reader.ReadToEnd();
+            ps.AddScript(script);
           }
+          ps.Invoke();
+
+        }
+        catch (Exception e)
+        {
+          Console.WriteLine("Error: " + e.Message.ToString());
+        }
+      }
     }
   TaskingType: Assembly
   UnsafeCompile: false

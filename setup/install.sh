@@ -292,7 +292,7 @@ if ! command_exists pyenv; then
     apt-get -y install build-essential gdb lcov pkg-config \
       libbz2-dev libffi-dev libgdbm-dev libgdbm-compat-dev liblzma-dev \
       libncurses5-dev libreadline6-dev libsqlite3-dev libssl-dev \
-      lzma lzma-dev tk-dev uuid-dev zlib1g-dev
+      lzma tk-dev uuid-dev zlib1g-dev
 
   pyenv install 3.12.6
 fi
@@ -307,7 +307,6 @@ fi
 
 echo -e "\x1b[1;34m[*] Installing Packages\x1b[0m"
 poetry config virtualenvs.in-project true
-poetry config virtualenvs.prefer-active-python true
 poetry install
 
 echo -e '\x1b[1;32m[+] Install Complete!\x1b[0m'

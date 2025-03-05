@@ -28,6 +28,19 @@ def remove_file(path: str) -> None:
         os.remove(path)
 
 
+def clear_file_contents(path: str) -> None:
+    """
+    Clears the contents of a file without deleting it.
+    If the file doesn't exist, it creates an empty file.
+    """
+    try:
+        with open(path, "w"):
+            pass
+        log.debug(f"Cleared contents of the file: {path}")
+    except Exception as e:
+        log.error(f"Failed to clear file contents for {path}: {e}", exc_info=True)
+
+
 def run_as_user(command, user=None, cwd=None):
     """
     Runs a command as a specified user or the user who invoked sudo.

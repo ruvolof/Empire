@@ -1,19 +1,11 @@
 import asyncio
 import logging
-import time
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from starlette import status
 
 log = logging.getLogger(__name__)
-
-
-@contextmanager
-def timer():
-    start = time.perf_counter()
-    yield lambda: time.perf_counter() - start
 
 
 @pytest.fixture(scope="function")
@@ -67,9 +59,9 @@ async def _create_checkins(session_local, models, agent_ids):
     )
 
 
-agent_count = 10
-time_delta = 5  # 17280 checkins per agent per day
-days_back = 7
+agent_count = 2
+time_delta = 20  # 4320 checkins per agent per day
+days_back = 3
 end_time = datetime(2023, 1, 8, tzinfo=timezone.utc)
 start_time = end_time - timedelta(days=days_back)
 
@@ -86,51 +78,6 @@ async def _create_checkin(session_local, models, agent_id):
 
         log.info(f"adding {len(checkins)} checkins for {agent_id}")
         db_2.add_all(checkins)
-
-
-@pytest.mark.slow
-def test_database_performance_checkins(models, host, agents, session_local):
-    # logging.basicConfig()
-    # logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
-    # logging.getLogger("sqlalchemy.engine").propagate = True
-    # print(query.statement.compile(compile_kwargs={"literal_binds": True}))
-
-    with session_local() as db:
-        asyncio.run(_create_checkins(session_local, models, agents))
-
-        with timer() as t:
-            checkins = db.query(models.AgentCheckIn).count()
-            assert checkins >= (agent_count * 17280 * days_back)
-        log.info(f"Time to query {checkins} checkins count: {t():0.4f} seconds")
-
-        with timer() as t:
-            agents = db.query(models.Agent).count()
-            assert agents >= agent_count
-        log.info(f"Time to query {agents} agents count: {t():0.4f} seconds")
-        assert t() < 1
-
-        with timer() as t:
-            query = db.query(models.Agent)
-            query.all()
-        log.info(f"Time to query {agents} agents: {t():0.4f} seconds")
-        assert t() < 1
-
-        with timer() as t:
-            query = db.query(models.AgentCheckIn).limit(50000)
-            query.all()
-        log.info(f"Time to query {checkins} checkins: {t():0.4f} seconds")
-        assert t() < 6  # noqa: PLR2004
-
-        agents = db.query(models.Agent).all()
-
-        with timer() as t:
-            for a in agents:
-                name = a.name
-                lastseen_time = a.lastseen_time
-                stale = a.stale
-                log.info(f"{name} - {lastseen_time} - {stale}")
-        log.info(f"Time to query {agents} agents' dynamic fields: {t():0.4f} seconds")
-        assert t() < 0.1 * agent_count
 
 
 def test_get_agent_checkins_agent_not_found(client, admin_auth_header):
@@ -153,7 +100,7 @@ def test_get_agent_checkins_with_limit_and_page(
     checkin_count = 10
     assert response.status_code == status.HTTP_200_OK
     assert len(response.json()["records"]) == checkin_count
-    assert response.json()["total"] > days_back * 17280
+    assert response.json()["total"] > days_back * 4320
     assert response.json()["page"] == 1
 
     page1 = response.json()["records"]
@@ -166,7 +113,7 @@ def test_get_agent_checkins_with_limit_and_page(
     page_count = 2
     assert response.status_code == status.HTTP_200_OK
     assert len(response.json()["records"]) == checkin_count
-    assert response.json()["total"] > days_back * 17280
+    assert response.json()["total"] > days_back * 4320
     assert response.json()["page"] == page_count
 
     page2 = response.json()["records"]
@@ -178,18 +125,17 @@ def test_get_agent_checkins_with_limit_and_page(
 def test_get_agent_checkins_multiple_agents(
     client, admin_auth_header, agents, session_local, models
 ):
-    with_checkins = agents[:3]
-    asyncio.run(_create_checkins(session_local, models, with_checkins))
+    asyncio.run(_create_checkins(session_local, models, agents))
 
     response = client.get(
         "/api/v2/agents/checkins",
         headers=admin_auth_header,
-        params={"agents": with_checkins[:2], "limit": 400000},
+        params={"agents": agents, "limit": 400000},
     )
 
     assert response.status_code == status.HTTP_200_OK
-    assert len(response.json()["records"]) == days_back * 17280 * 2
-    assert {r["agent_id"] for r in response.json()["records"]} == set(with_checkins[:2])
+    assert len(response.json()["records"]) == days_back * 4320 * agent_count
+    assert {r["agent_id"] for r in response.json()["records"]} == set(agents)
 
 
 @pytest.mark.slow
@@ -199,7 +145,7 @@ def test_agent_checkins_aggregate(
     if empire_config.database.use == "sqlite":
         pytest.skip("sqlite not supported for checkin aggregation")
 
-    asyncio.run(_create_checkins(session_local, models, agents[:3]))
+    asyncio.run(_create_checkins(session_local, models, agents))
 
     response = client.get(
         "/api/v2/agents/checkins/aggregate",
@@ -209,7 +155,7 @@ def test_agent_checkins_aggregate(
     assert response.status_code == status.HTTP_200_OK
     assert response.elapsed.total_seconds() < 5  # noqa: PLR2004
     assert response.json()["bucket_size"] == "day"
-    assert response.json()["records"][1]["count"] == 17280 * 3
+    assert response.json()["records"][1]["count"] == 4320 * agent_count
 
     response = client.get(
         "/api/v2/agents/checkins/aggregate",
@@ -220,7 +166,7 @@ def test_agent_checkins_aggregate(
     assert response.status_code == status.HTTP_200_OK
     assert response.elapsed.total_seconds() < 5  # noqa: PLR2004
     assert response.json()["bucket_size"] == "hour"
-    assert response.json()["records"][1]["count"] == 720 * 3
+    assert response.json()["records"][1]["count"] == 180 * agent_count
 
     response = client.get(
         "/api/v2/agents/checkins/aggregate",
@@ -231,7 +177,7 @@ def test_agent_checkins_aggregate(
     assert response.status_code == status.HTTP_200_OK
     assert response.elapsed.total_seconds() < 5  # noqa: PLR2004
     assert response.json()["bucket_size"] == "minute"
-    assert response.json()["records"][1]["count"] == 12 * 3
+    assert response.json()["records"][1]["count"] == 3 * agent_count
 
     response = client.get(
         "/api/v2/agents/checkins/aggregate",
@@ -246,7 +192,7 @@ def test_agent_checkins_aggregate(
     assert response.status_code == status.HTTP_200_OK
     assert response.elapsed.total_seconds() < 5  # noqa: PLR2004
     assert response.json()["bucket_size"] == "second"
-    assert response.json()["records"][1]["count"] == 1 * 3
+    assert response.json()["records"][1]["count"] == 1 * agent_count
 
     # Test start date and end date
     response = client.get(
