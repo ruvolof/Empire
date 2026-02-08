@@ -3,6 +3,9 @@ authors:
   - name: Anthony Rose
     handle: Cx01N
     link: https://twitter.com/Cx01N_
+  - name: Werebug
+    handle: ''
+    link: https://werebug.com
 description: |
   Executes LinPEAS (Linux Privilege Escalation Awesome Script) to perform
   comprehensive privilege escalation reconnaissance on Linux, Unix, and
@@ -11,6 +14,7 @@ description: |
   kernel exploits, and misconfigured services. Provides detailed output
   of potential attack paths and security misconfigurations that could
   lead to privilege escalation.
+  Downloads the latest version of linpeas.sh from GitHub.
 software: ''
 tactics: []
 techniques:
@@ -28,4 +32,21 @@ options:
     description: Agent to run on.
     required: true
     value: ''
-script_path: python/situational_awareness/LinPEAS.py
+script: |
+  script_input = r'''
+  %s
+  '''
+  try:
+    # Use subprocess to run the shell script and capture the output
+    process = subprocess.Popen('/bin/sh',
+                               stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate(input=script_input.encode())
+
+    # Print the output
+    print(stdout.decode('latin-1'))
+  except Exception as e:
+    print(e)
+advanced:
+  custom_generate: true

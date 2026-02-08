@@ -1,7 +1,7 @@
 name: RunMsfvenomPayload
 authors:
-  - name: ''
-    handle: 'Werebug'
+  - name: 'Werebug'
+    handle: ''
     link: 'https://werebug.com'
 description: |
   This module generates an msfvenom payload and runs it in a separate process
