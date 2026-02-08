@@ -3,6 +3,9 @@ authors:
   - name: Anthony Rose
     handle: Cx01N
     link: https://twitter.com/Cx01N_
+  - name: Werebug
+    handle: ''
+    link: https://werebug.com
 description: |
   Executes LinPEAS (Linux Privilege Escalation Awesome Script) to perform
   comprehensive privilege escalation reconnaissance on Linux, Unix, and
@@ -11,6 +14,7 @@ description: |
   kernel exploits, and misconfigured services. Provides detailed output
   of potential attack paths and security misconfigurations that could
   lead to privilege escalation.
+  Downloads the latest version of linpeas.sh from GitHub.
 software: ''
 tactics: [TA0007]
 techniques:
@@ -30,4 +34,36 @@ options:
     description: Agent to run on.
     required: true
     value: ''
-script_path: python/situational_awareness/LinPEAS.py
+script: |
+  import subprocess
+  import textwrap
+  import tempfile
+  import os
+
+  script = textwrap.dedent(r"""%s""")
+
+  # Adding a marker to the output to exit the read loop even if linpeas
+  # leave some open pipes.
+  final_marker = 'END_OF_LINPEAS_OUTPUT'
+  script = f'{script}\necho {final_marker}\n'
+
+  # Create a temporary file and write the shell script to it
+  with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp:
+    temp.write(script)
+    temp_name = temp.name
+
+  # Use subprocess to run the shell script and print the output
+  process = subprocess.Popen(['/bin/sh', temp_name, '-q'],
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE,
+                             text=True,
+                             encoding='latin-1')
+  for line in process.stdout:
+    if line.strip() == final_marker:
+      break
+    print(line, end='')
+
+  # Don't forget to remove the temporary file when you're done with it!
+  os.remove(temp_name)
+advanced:
+  custom_generate: true

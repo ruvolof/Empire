@@ -1,7 +1,7 @@
 name: SSHKeyAdd
 authors:
-  - name: ''
-    handle: 'Werebug'
+  - name: 'Werebug'
+    handle: ''
     link: 'https://werebug.com'
 description: |
   This module adds a provided public key to the authorized_keys file of the current user.
