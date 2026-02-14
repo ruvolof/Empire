@@ -399,8 +399,7 @@ class Stager(Transaction):
         self.server.output = Container()
         self.client.verb = "GET"
 
-        # Having a missing http-stager and '/' in http-get or http-post throws an error
-        # This catches it and generates a random http-stager uri
+    def add_default_uri(self):
         if not self.client.uris:
             self.client.uris = []
             self.client.uris.append("/" + self.get_random_string(8) + "/")
