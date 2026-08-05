@@ -243,9 +243,3 @@ class StagerPostRequest(BaseModel):
 class StagerUpdateRequest(BaseModel):
     name: str
     options: coerced_dict
-
-    def __iter__(self):
-        return iter(self.__root__)
-
-    def __getitem__(self, item):
-        return self.__root__[item]

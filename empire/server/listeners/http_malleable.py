@@ -12,6 +12,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from flask import Flask, Response, make_response, request
+from sqlalchemy import select
 from werkzeug.serving import WSGIRequestHandler
 
 from empire.server.common import encryption, helpers, malleable, packets, templating
@@ -185,8 +186,7 @@ class Listener:
         profile_name = self.options["Profile"]["Value"]
         profile_data = (
             SessionLocal()
-            .query(models.Profile)
-            .filter(models.Profile.name == profile_name)
+            .scalars(select(models.Profile).where(models.Profile.name == profile_name))
             .first()
         )
 
@@ -1393,9 +1393,9 @@ class ExtendedPacketHandler(PacketHandler):
                             break
 
                 if not implementation:
-                    # log invalid uri
                     message = f"{listenerName}: unknown uri /{request_uri} requested by {clientIP}."
                     self.instance_log.warning(message)
+                    return Response(self.default_response(), 404)
 
                 # attempt to extract information from the request
                 if implementation is profile.stager and request.method == "POST":
@@ -1553,8 +1553,11 @@ class ExtendedPacketHandler(PacketHandler):
 
                                 session_info = (
                                     SessionLocal()
-                                    .query(models.Agent)
-                                    .filter(models.Agent.session_id == sessionID)
+                                    .scalars(
+                                        select(models.Agent).where(
+                                            models.Agent.session_id == sessionID
+                                        )
+                                    )
                                     .first()
                                 )
                                 if session_info.language == "ironpython":

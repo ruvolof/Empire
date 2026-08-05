@@ -53,7 +53,9 @@ def test_download_url_missing_ref():
 
 
 @patch("empire.server.core.config.data_manager.requests")
-def test_download_url_repo_ref_finds_asset(mock_requests):
+def test_download_url_repo_ref_finds_asset(mock_requests, monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
     mock_resp = MagicMock()
     mock_resp.ok = True
     mock_resp.json.return_value = {
@@ -77,7 +79,56 @@ def test_download_url_repo_ref_finds_asset(mock_requests):
     mock_requests.get.assert_called_once_with(
         "https://api.github.com/repos/BC-SECURITY/Empire-Compiler/releases/tags/v1.0.0-a.1",
         timeout=30,
+        headers={"Accept": "application/vnd.github+json"},
     )
+
+
+@patch("empire.server.core.config.data_manager.requests")
+def test_download_url_authenticates_when_token_present(mock_requests, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "tok_abc123")
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.json.return_value = {"assets": []}
+    mock_requests.get.return_value = mock_resp
+
+    config = EmpireCompilerConfig(repo="BC-SECURITY/Empire-Compiler", ref="v1.0.0")
+    _resolve_compiler_download_url(config, "linux-x64")
+
+    headers = mock_requests.get.call_args.kwargs["headers"]
+    assert headers["Authorization"] == "Bearer tok_abc123"
+
+
+@patch("empire.server.core.config.data_manager.requests")
+def test_download_url_falls_back_to_gh_token(mock_requests, monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "tok_gh")
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.json.return_value = {"assets": []}
+    mock_requests.get.return_value = mock_resp
+
+    config = EmpireCompilerConfig(repo="BC-SECURITY/Empire-Compiler", ref="v1.0.0")
+    _resolve_compiler_download_url(config, "linux-x64")
+
+    headers = mock_requests.get.call_args.kwargs["headers"]
+    assert headers["Authorization"] == "Bearer tok_gh"
+
+
+@patch("empire.server.core.config.data_manager.requests")
+def test_download_url_unauthenticated_when_no_token(mock_requests, monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.json.return_value = {"assets": []}
+    mock_requests.get.return_value = mock_resp
+
+    config = EmpireCompilerConfig(repo="BC-SECURITY/Empire-Compiler", ref="v1.0.0")
+    _resolve_compiler_download_url(config, "linux-x64")
+
+    headers = mock_requests.get.call_args.kwargs["headers"]
+    assert "Authorization" not in headers
 
 
 @patch("empire.server.core.config.data_manager.requests")

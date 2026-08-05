@@ -1,4 +1,4 @@
-import random
+import secrets
 from textwrap import dedent
 
 from empire.server.common import helpers
@@ -100,7 +100,7 @@ def generate_random_cipher():
         "AES256-SHA256",
         "AES128-SHA256",
     ]
-    tls12 = random.choice(random_tls12)
+    tls12 = secrets.choice(random_tls12)
 
     tls10 = "ECDHE-RSA-AES256-SHA"
     return f"{tls12}:{tls10}"

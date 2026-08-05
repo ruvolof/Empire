@@ -1,11 +1,12 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import bcrypt
+import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
-from jose import JWTError, jwt
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette import status
 
@@ -14,7 +15,7 @@ from empire.server.core.db import models
 from empire.server.core.db.base import SessionLocal
 
 # This all comes from the amazing fastapi docs: https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/
-SECRET_KEY = SessionLocal().query(models.Config).first().jwt_secret_key
+SECRET_KEY = SessionLocal().scalars(select(models.Config)).first().jwt_secret_key
 ALGORITHM = "HS256"
 
 # Long token expiration until refresh token is implemented
@@ -47,7 +48,9 @@ def get_password_hash(plain_password: str) -> str:
 
 
 def get_user(db, username: str) -> models.User:
-    return db.query(models.User).filter(models.User.username == username).first()
+    return db.scalars(
+        select(models.User).where(models.User.username == username)
+    ).first()
 
 
 def authenticate_user(db: Session, username: str, password: str):
@@ -64,9 +67,9 @@ def authenticate_user(db: Session, username: str, password: str):
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(UTC) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.now(UTC) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -106,7 +109,7 @@ def get_current_user_from_token(
         if username is None:
             raise credentials_exception
         token_data = TokenData(username=username)
-    except JWTError as e:
+    except jwt.InvalidTokenError as e:
         raise credentials_exception from e
     except HTTPException:
         # Re-raise HTTPExceptions from get_token_from_headers

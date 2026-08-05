@@ -8,7 +8,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: pre-commit/action@v3.0.1
   matrix-prep-config:
     runs-on: ubuntu-latest
@@ -35,13 +35,13 @@ jobs:
     strategy:
       matrix: ${{ fromJson(needs.matrix-prep-config.outputs.config) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: ${{ endsWith(github.repository, 'Empire') }}
         with:
           submodules: 'recursive'
       # token is only needed in sponsors repo because of private submodules
       # don't use token in public repo because prs from forks cannot access secrets
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: ${{ endsWith(github.repository, 'Empire-Sponsors') }}
         with:
           submodules: 'recursive'
@@ -56,7 +56,7 @@ jobs:
       # Poetry cache depends on OS, Python version and Poetry version.
       # https://gist.github.com/gh640/233a6daf68e9e937115371c0ecd39c61
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'poetry'
@@ -73,6 +73,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mono-runtime mingw-w64 perl
       - name: Run test suite - mysql
+        # Authenticate the Empire Compiler download against the GitHub API so it
+        # isn't throttled by the unauthenticated 60 req/hr shared-runner limit.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
           if [ "${{ matrix.python-version }}" = "3.14" ]; then
@@ -83,11 +87,13 @@ jobs:
       - name: Run test suite - sqlite
         if: ${{ startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name,
           'test-sqlite') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATABASE_USE=sqlite poetry run pytest . -v --runslow --durations=10 -m "not mysql"
       - name: Pytest coverage comment
         if: ${{ matrix.python-version == '3.14' }}
-        uses: MishaKav/pytest-coverage-comment@v1.2.0
+        uses: MishaKav/pytest-coverage-comment@v1.10.0
         with:
           pytest-coverage-path: ./pytest-coverage.txt
           junitxml-path: ./pytest.xml
@@ -99,7 +105,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Test Docker Image
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: 'recursive'
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -118,6 +124,10 @@ jobs:
       - name: Build docker image
         run: DOCKER_BUILDKIT=1 docker compose -f .github/docker-compose.yml build
       - name: Run tests on docker image
+        # Forwarded into the container (see docker-compose.yml) so the Empire
+        # Compiler download is authenticated and not rate-limited.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: docker compose -f .github/docker-compose.yml run test
       - name: run structure tests docker
         uses: plexsystems/container-structure-test-action@v0.3.0
@@ -144,7 +154,7 @@ jobs:
           # Parrot disabled for now because the apt repo is having some slowness issues.
           # Install is running up way too many minutes.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: 'recursive'
           depth: 0
@@ -163,7 +173,7 @@ jobs:
       # To save CI time, only run these tests when the install script or deps changed
       - name: Get changed files using defaults
         id: changed-files
-        uses: tj-actions/changed-files@v47.0.1
+        uses: tj-actions/changed-files@v47.0.6
       - name: Build images
         if: ${{ contains(steps.changed-files.outputs.modified_files, 'setup/install.sh')
           || contains(steps.changed-files.outputs.modified_files, 'poetry.lock')

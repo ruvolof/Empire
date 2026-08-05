@@ -45,7 +45,7 @@ def catch_logs(level: int, logger: logging.Logger) -> LogCaptureHandler:
         logger.removeHandler(handler)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def main_menu_mock(models, install_path):
     main_menu = Mock()
     main_menu.install_path = Path(install_path)
@@ -70,8 +70,14 @@ def main_menu_mock(models, install_path):
     return main_menu
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def module_service(main_menu_mock):
+    # Module-scoped: each ModuleService() call iterates ~498 module
+    # YAMLs (~1-2s after the helpers lru_cache lands; ~10s without).
+    # Reusing a single instance across tests in this file is safe —
+    # the consuming tests only mutate `module_service.modules` via
+    # `_load_module(...)` with isolated keys, and one mutates
+    # `module_source_path` via a context manager that restores it.
     module_service = ModuleService(main_menu_mock)
     main_menu_mock.modulesv2 = module_service
 
@@ -131,6 +137,18 @@ def test_load_modules(main_menu_mock, models, session_local):
                     # not gonna bother mocking out the csharp server right now.
                     if str(e) == "csharpserver plugin not running":
                         pass
+
+        # Lazy-loading custom_generate modules deferred their import +
+        # Module() construction out of boot. Sweep them here so that a
+        # broken in-tree custom_generate .py (syntax error, missing
+        # `Module` class, ImportError) still fails CI rather than only
+        # blowing up when a user runs that specific module.
+        for key, module in module_service.modules.items():
+            if module.advanced.custom_generate:
+                module_service._load_custom_generate_class(module)
+                assert module.advanced.generate_class is not None, (
+                    f"custom_generate module {key} did not produce a generate_class"
+                )
 
 
 def test_execute_custom_generate(

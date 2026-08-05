@@ -37,10 +37,12 @@ Includes:
 
 import base64
 import binascii
+import functools
 import ipaddress
 import logging
 import random
 import re
+import secrets
 import socket
 import string
 import sys
@@ -48,8 +50,6 @@ import threading
 from datetime import datetime
 
 import click
-
-from empire.server.utils.math_util import old_div
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ log = logging.getLogger(__name__)
 #
 ################################################################
 
-globentropy = random.randint(1, datetime.today().day)
+globentropy = random.randint(1, datetime.today().day)  # noqa: S311 - obfuscation seed, not security-sensitive
 globDebug = False
 
 
@@ -77,9 +77,10 @@ def validate_ip(IP):
     """
     try:
         ipaddress.ip_address(IP)
-        return True
     except Exception:
         return False
+    else:
+        return True
 
 
 def validate_ntlm(data):
@@ -102,8 +103,8 @@ def random_string(length=-1, charset=string.ascii_letters):
     A character set can be specified, defaulting to just alpha letters.
     """
     if length == -1:
-        length = random.randrange(6, 16)
-    return "".join(random.choice(charset) for x in range(length))
+        length = secrets.choice(range(6, 16))
+    return "".join(secrets.choice(charset) for _ in range(length))
 
 
 def obfuscate_call_home_address(data):
@@ -234,43 +235,72 @@ def get_powerview_psreflect_overhead(script):
     try:
         return strip_powershell_comments(pattern.findall(script)[0])
     except Exception:
-        log.error("Error extracting psreflect overhead from script!")
+        log.exception("Error extracting psreflect overhead from script!")
         return ""
 
 
-def get_dependent_functions(code, functionNames):
+_PSREFLECT_NAMESPACE_PATTERN = re.compile(
+    r"\$Netapi32|\$Advapi32|\$Kernel32|\$Wtsapi32", re.IGNORECASE
+)
+
+
+def get_dependent_functions(code, functionNames, deps_pattern):
     """
     Helper that takes a chunk of PowerShell code and a set of function
-    names and returns the unique set of function names within the script block.
+    names and returns the unique function names referenced within the
+    script block, in deterministic insertion order.
+
+    ``deps_pattern`` is a precompiled alternation regex of all known
+    function names (built once by ``_build_function_map``); a single
+    findall pass over it replaces what used to be one ``re.search``
+    per candidate name (~600 per call on PowerView).
+
+    Returns a list (not a set) so that downstream concatenation order
+    is stable across Python invocations; sets iterate in hash-
+    randomized order (CPython randomizes the string-hash seed per
+    process by default) and would make the generated script's byte
+    sequence change between runs.
     """
+    # Case-insensitive alternation: matches preserve original casing,
+    # so normalize to the canonical case from functionNames. dict.fromkeys
+    # dedupes while preserving first-match order.
+    canonical = {n.lower(): n for n in functionNames}
+    dependentFunctions = list(
+        dict.fromkeys(
+            canonical[m.lower()]
+            for m in deps_pattern.findall(code)
+            if m.lower() in canonical
+        )
+    )
 
-    dependentFunctions = set()
-    for functionName in functionNames:
-        # find all function names that aren't followed by another alpha character
-        if re.search("[^A-Za-z']+" + functionName + "[^A-Za-z']+", code, re.IGNORECASE):
-            # if "'AbuseFunction' \"%s" % (functionName) not in code:
-            # TODO: fix superflous functions from being added to PowerUp Invoke-AllChecks code...
-            dependentFunctions.add(functionName)
-
-    if re.search(r"\$Netapi32|\$Advapi32|\$Kernel32|\$Wtsapi32", code, re.IGNORECASE):
-        dependentFunctions |= {
+    if _PSREFLECT_NAMESPACE_PATTERN.search(code):
+        for psreflect_fn in (
             "New-InMemoryModule",
             "func",
             "Add-Win32Type",
             "psenum",
             "struct",
-        }
+        ):
+            if psreflect_fn not in dependentFunctions:
+                dependentFunctions.append(psreflect_fn)
 
     return dependentFunctions
 
 
-def find_all_dependent_functions(functions, functionsToProcess, resultFunctions=None):
+def find_all_dependent_functions(
+    functions, functionsToProcess, deps_pattern, resultFunctions=None
+):
     """
     Takes a dictionary of "[functionName] -> functionCode" and a set of functions
     to process, and recursively returns all nested functions that may be required.
 
     Used to map the dependent functions for nested script dependencies like in
     PowerView.
+
+    ``deps_pattern`` is a precompiled alternation regex of all known
+    function names (see ``_build_function_map``); it lets
+    ``get_dependent_functions`` scan each code chunk in a single pass
+    instead of running one regex per candidate name.
     """
     resultFunctions = [] if resultFunctions is None else resultFunctions
     if isinstance(functionsToProcess, str):
@@ -286,11 +316,11 @@ def find_all_dependent_functions(functions, functionsToProcess, resultFunctions=
         # get the dependencies for the function we're currently processing
         try:
             functionDependencies = get_dependent_functions(
-                functions[requiredFunction], functions.keys()
+                functions[requiredFunction], functions.keys(), deps_pattern
             )
         except Exception:
             functionDependencies = []
-            log.error(
+            log.exception(
                 f"Error in retrieving dependencies for function {requiredFunction} !"
             )
 
@@ -305,10 +335,98 @@ def find_all_dependent_functions(functions, functionsToProcess, resultFunctions=
                 resultFunctions.append(functionDependency)
 
         resultFunctions = find_all_dependent_functions(
-            functions, functionsToProcess, resultFunctions
+            functions, functionsToProcess, deps_pattern, resultFunctions
         )
 
     return resultFunctions
+
+
+_FUNCTION_PATTERN = re.compile(r"\n(?:function|filter).*?{.*?\n}\n", re.DOTALL)
+_BLOCK_COMMENT_PATTERN = re.compile("<#.*?#>", re.DOTALL)
+
+
+@functools.lru_cache(maxsize=128)
+def _build_function_map(
+    script: str,
+) -> tuple[str, dict[str, str], "re.Pattern[str]"]:
+    """Strip block comments and parse the script into a name->code map.
+
+    Returns ``(cleaned_script, name_to_code, deps_pattern)`` where
+    ``deps_pattern`` is a single precompiled regex of all known
+    function names — used by ``get_dependent_functions`` to avoid the
+    N-per-call recompile/research that dominated profiling (each call
+    on PowerView ran ~600 regex searches per dep-walk step).
+
+    Cached by ``functools.lru_cache(maxsize=128)`` keyed on the script
+    string itself — most callers (notably the PowerView modules) pass
+    identical 25k-line scripts, so without caching the regex parse
+    runs N times for N modules. The bound prevents unbounded memory
+    growth in long-running production servers, and the string-equality
+    key avoids the (theoretical) hash-collision risk of hashing-based
+    caches.
+    """
+    cleaned = _BLOCK_COMMENT_PATTERN.sub("", script)
+    functions = {}
+    for func_match in _FUNCTION_PATTERN.findall(cleaned):
+        name = func_match[:40].split()[1]
+        functions[name] = func_match
+
+    if functions:
+        # Sort by length desc so longer names match before shorter
+        # prefixes (e.g. "Get-User2" before "Get-User").
+        names = sorted(functions.keys(), key=len, reverse=True)
+        alternation = "|".join(re.escape(n) for n in names)
+        deps_pattern = re.compile(
+            rf"[^A-Za-z']({alternation})[^A-Za-z']", re.IGNORECASE
+        )
+    else:
+        deps_pattern = re.compile(r"$^")  # never matches
+
+    return cleaned, functions, deps_pattern
+
+
+@functools.lru_cache(maxsize=512)
+def _generate_dynamic_powershell_script_cached(
+    script: str, function_names: tuple[str, ...]
+) -> str:
+    """Inner cached implementation of ``generate_dynamic_powershell_script``.
+
+    Cached by ``(script, function_names)`` keys with a bounded LRU.
+    Direct callers should use the public function below; this exists
+    only to give lru_cache a hashable signature.
+    """
+    psreflect_functions = [
+        "New-InMemoryModule",
+        "func",
+        "Add-Win32Type",
+        "psenum",
+        "struct",
+    ]
+
+    script, functions, deps_pattern = _build_function_map(script)
+
+    # recursively enumerate all possible function dependencies and
+    #   start building the new result script
+    function_dependencies = []
+
+    for functionName in function_names:
+        function_dependencies += find_all_dependent_functions(
+            functions, functionName, deps_pattern
+        )
+        function_dependencies = unique(function_dependencies)
+
+    new_script = ""
+    for function_dependency in function_dependencies:
+        try:
+            new_script += functions[function_dependency] + "\n"
+        except Exception:
+            log.exception(f"Key error with function {function_dependency} !")
+
+    # if any psreflect methods are needed, add in the overhead at the end
+    if any(el in set(psreflect_functions) for el in function_dependencies):
+        new_script += get_powerview_psreflect_overhead(script)
+
+    return strip_powershell_comments(new_script) + "\n"
 
 
 def generate_dynamic_powershell_script(script, function_names):
@@ -320,54 +438,23 @@ def generate_dynamic_powershell_script(script, function_names):
     A script is returned with only the code necessary for the given
     functionName, stripped of comments and whitespace.
 
-    Note: for PowerView, it will also dynamically detect if psreflect
-    overhead is needed and add it to the result script.
+    Note: in practice this is only called with PowerView as the input
+    script (see ``module_service.finalize_module`` and
+    ``new_gpo_immediate_task``). The PSReflect-overhead detection and
+    the hardcoded {New-InMemoryModule, func, Add-Win32Type, psenum,
+    struct} fallback set in ``get_dependent_functions`` are PowerView-
+    specific assumptions; a future caller passing a non-PowerView
+    script would still work but wouldn't get the PSReflect handling.
+
+    Output is memoized via a bounded LRU keyed on the (script,
+    function_names) pair — the PowerView modules generate the same
+    25k-line script through this function many times, and each call
+    costs ~1s of regex + dependency-walk + comment stripping for an
+    identical result.
     """
-
-    new_script = ""
-    psreflect_functions = [
-        "New-InMemoryModule",
-        "func",
-        "Add-Win32Type",
-        "psenum",
-        "struct",
-    ]
-
     if not isinstance(function_names, list):
         function_names = [function_names]
-
-    # build a mapping of functionNames -> stripped function code
-    functions = {}
-    pattern = re.compile(r"\n(?:function|filter).*?{.*?\n}\n", re.DOTALL)
-
-    script = re.sub(re.compile("<#.*?#>", re.DOTALL), "", script)
-    for func_match in pattern.findall(script):
-        name = func_match[:40].split()[1]
-        functions[name] = func_match
-
-    # recursively enumerate all possible function dependencies and
-    #   start building the new result script
-    function_dependencies = []
-
-    for functionName in function_names:
-        function_dependencies += find_all_dependent_functions(
-            functions, functionName, []
-        )
-        function_dependencies = unique(function_dependencies)
-
-    for function_dependency in function_dependencies:
-        try:
-            new_script += functions[function_dependency] + "\n"
-        except Exception:
-            log.error(f"Key error with function {function_dependency} !")
-
-    # if any psreflect methods are needed, add in the overhead at the end
-    if any(el in set(psreflect_functions) for el in function_dependencies):
-        new_script += get_powerview_psreflect_overhead(script)
-
-    new_script = strip_powershell_comments(new_script)
-
-    return new_script + "\n"
+    return _generate_dynamic_powershell_script_cached(script, tuple(function_names))
 
 
 ###############################################################
@@ -453,7 +540,7 @@ def parse_mimikatz(data):  # noqa: PLR0912 PLR0915
 
                 hostName = temp.split(b".")[0]
                 hostDomain = b".".join(temp.split(".")[1:])
-            except Exception:
+            except Exception:  # noqa: S110 - malformed Mimikatz line; skip and continue parsing
                 pass
 
     for regex in regexes:
@@ -470,7 +557,7 @@ def parse_mimikatz(data):  # noqa: PLR0912 PLR0915
                         domain = line.split(":", 1)[1].strip()
                     elif "NTLM" in line or "Password" in line:
                         password = line.split(":", 1)[1].strip()
-                except Exception:
+                except Exception:  # noqa: S110 - malformed Mimikatz line; skip and continue parsing
                     pass
 
             if password not in ("", "(null)"):
@@ -520,7 +607,7 @@ def parse_mimikatz(data):  # noqa: PLR0912 PLR0915
                                 sid.decode("UTF-8"),
                             )
                         )
-                except Exception:
+                except Exception:  # noqa: S110 - malformed Mimikatz line; skip and continue parsing
                     pass
 
     # check if we get lsadump::dcsync output
@@ -580,13 +667,13 @@ def get_file_size(file):
     Returns a string with the file size and highest rating.
     """
     byte_size = sys.getsizeof(file)
-    kb_size = old_div(byte_size, 1024)
+    kb_size = byte_size // 1024
     if kb_size == 0:
         return f"{byte_size} Bytes"
-    mb_size = old_div(kb_size, 1024)
+    mb_size = kb_size // 1024
     if mb_size == 0:
         return f"{kb_size} KB"
-    gb_size = old_div(mb_size, 1024) % (mb_size)
+    gb_size = mb_size // 1024
     if gb_size == 0:
         return f"{mb_size} MB"
     return f"{gb_size} GB"

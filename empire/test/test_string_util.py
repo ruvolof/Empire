@@ -1,6 +1,10 @@
 import pytest
 
-from empire.server.utils.string_util import is_valid_session_id, slugify
+from empire.server.utils.string_util import (
+    get_random_string,
+    is_valid_session_id,
+    slugify,
+)
 
 
 @pytest.mark.parametrize(
@@ -31,3 +35,17 @@ def test_slugify():
         slugify("this/has invalid_characters-in\tstring")
         == "this_has_invalid_characters_in_string"
     )
+
+
+class TestGetRandomString:
+    def test_default_length(self):
+        s = get_random_string()
+        assert 6 <= len(s) <= 15  # noqa: PLR2004
+
+    def test_explicit_length(self):
+        s = get_random_string(length=10)
+        assert len(s) == 10  # noqa: PLR2004
+
+    def test_custom_charset(self):
+        s = get_random_string(length=20, charset="abc")
+        assert all(c in "abc" for c in s)

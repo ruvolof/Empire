@@ -1,6 +1,6 @@
 import typing
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from empire.server.api.v2.credential.credential_dto import CredentialPostRequest
@@ -21,10 +21,10 @@ class CredentialService:
         credtype: str | None = None,
         tags: list[str] | None = None,
     ):
-        query = db.query(models.Credential)
+        stmt = select(models.Credential)
 
         if search:
-            query = query.filter(
+            stmt = stmt.where(
                 or_(
                     models.Credential.domain.like(f"%{search}%"),
                     models.Credential.username.like(f"%{search}%"),
@@ -35,7 +35,7 @@ class CredentialService:
 
         if tags:
             tags_split = [tag.split(":", 1) for tag in tags]
-            query = query.join(models.Credential.tags).filter(
+            stmt = stmt.join(models.Credential.tags).where(
                 and_(
                     models.Tag.name.in_([tag[0] for tag in tags_split]),
                     models.Tag.value.in_([tag[1] for tag in tags_split]),
@@ -43,13 +43,15 @@ class CredentialService:
             )
 
         if credtype:
-            query = query.filter(models.Credential.credtype == credtype)
+            stmt = stmt.where(models.Credential.credtype == credtype)
 
-        return query.all()
+        return db.scalars(stmt).all()
 
     @staticmethod
     def get_by_id(db: Session, uid: int) -> models.Credential | None:
-        return db.query(models.Credential).filter(models.Credential.id == uid).first()
+        return db.scalars(
+            select(models.Credential).where(models.Credential.id == uid)
+        ).first()
 
     @staticmethod
     def delete_credential(db: Session, credential: models.Credential):
@@ -61,9 +63,8 @@ class CredentialService:
         Using IntegrityError and depending on the db invalidates the whole
         transaction, so instead we'll check it manually.
         """
-        found = (
-            db.query(models.Credential)
-            .filter(
+        found = db.scalar(
+            select(models.Credential).where(
                 and_(
                     models.Credential.credtype == credential_dto.credtype,
                     models.Credential.domain == credential_dto.domain,
@@ -71,7 +72,6 @@ class CredentialService:
                     models.Credential.password == credential_dto.password,
                 )
             )
-            .first()
         )
 
         return found is not None

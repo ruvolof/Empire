@@ -1,6 +1,7 @@
 import base64
 import enum
 import os
+from datetime import datetime
 from pathlib import Path
 
 import sqlalchemy
@@ -8,12 +9,11 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlalchemy import (
     JSON,
-    Boolean,
     Column,
     Enum,
-    Float,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     Sequence,
     String,
@@ -26,17 +26,25 @@ from sqlalchemy import (
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import Mapped, declarative_base, deferred, relationship
-from sqlalchemy_utc import UtcDateTime, utcnow
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
 from empire.server.core.config.config_manager import (
     PluginAutoExecuteConfig,
     empire_config,
 )
+from empire.server.core.db.utc_datetime import UtcDateTime, utcnow
 from empire.server.core.module_models import EmpireAuthor
 from empire.server.utils.datetime_util import is_stale
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    pass
+
 
 database_config = empire_config.database
 use = os.environ.get("DATABASE_USE", database_config.use)
@@ -191,19 +199,21 @@ class PluginInfo(BaseModel):
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, Sequence("user_id_seq"), primary_key=True)
-    username = Column(String(255), nullable=False)
-    hashed_password = Column(String(255), nullable=False)
-    api_token = Column(String(50))
-    enabled = Column(Boolean, nullable=False)
-    admin = Column(Boolean, nullable=False)
-    notes = Column(Text)
-    created_at = Column(UtcDateTime, default=utcnow(), nullable=False)
-    updated_at = Column(
-        UtcDateTime, default=utcnow(), onupdate=utcnow(), nullable=False
+    id: Mapped[int] = mapped_column(Sequence("user_id_seq"), primary_key=True)
+    # Indexed for the per-request login lookup in jwt_auth.get_user
+    # and user_service.get_by_name.
+    username: Mapped[str] = mapped_column(String(255), index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    api_token: Mapped[str | None] = mapped_column(String(50))
+    enabled: Mapped[bool]
+    admin: Mapped[bool]
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), onupdate=utcnow()
     )
-    avatar = relationship("Download")
-    avatar_id = Column(Integer, ForeignKey("downloads.id"), nullable=True)
+    avatar: Mapped["Download | None"] = relationship()
+    avatar_id: Mapped[int | None] = mapped_column(ForeignKey("downloads.id"))
 
     def __repr__(self):
         return f"<User(username='{self.username}')>"
@@ -211,17 +221,17 @@ class User(Base):
 
 class Listener(Base):
     __tablename__ = "listeners"
-    id = Column(Integer, Sequence("listener_id_seq"), primary_key=True)
-    name = Column(String(255), nullable=False, unique=True)
-    module = Column(String(255), nullable=False)
-    listener_type = Column(String(255), nullable=True)
-    listener_category = Column(String(255), nullable=False)
-    enabled = Column(Boolean, nullable=False)
-    host_address = Column(String(255), nullable=True)
-    options = Column(JSON)
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow())
-    tags = relationship("Tag", secondary=listener_tag_assc)
-    autorun_tasks = Column(JSON, nullable=True)
+    id: Mapped[int] = mapped_column(Sequence("listener_id_seq"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    module: Mapped[str] = mapped_column(String(255))
+    listener_type: Mapped[str | None] = mapped_column(String(255))
+    listener_category: Mapped[str] = mapped_column(String(255))
+    enabled: Mapped[bool]
+    host_address: Mapped[str | None] = mapped_column(String(255))
+    options: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    tags: Mapped[list["Tag"]] = relationship(secondary=listener_tag_assc)
+    autorun_tasks: Mapped[list | None] = mapped_column(JSON)
 
     def __repr__(self):
         return f"<Listener(name='{self.name}')>"
@@ -229,9 +239,9 @@ class Listener(Base):
 
 class Host(Base):
     __tablename__ = "hosts"
-    id = Column(Integer, Sequence("host_id_seq"), primary_key=True)
-    name = Column(Text, nullable=False)
-    internal_ip = Column(Text)
+    id: Mapped[int] = mapped_column(Sequence("host_id_seq"), primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    internal_ip: Mapped[str | None] = mapped_column(Text)
 
     # unique check handled differently in mysql and sqlite
     # In base.py, a unique constraint is added for sqlite
@@ -245,59 +255,68 @@ class AgentCheckIn(Base):
     """
 
     __tablename__ = "agent_checkins"
-    agent_id = Column(
-        String(255),
+    agent_id: Mapped[str] = mapped_column(
         ForeignKey("agents.session_id", ondelete="CASCADE"),
-        nullable=False,
         primary_key=True,
     )
-    checkin_time = Column(
-        UtcDateTime, nullable=False, default=utcnow(), index=True, primary_key=True
+    checkin_time: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), index=True, primary_key=True
     )
 
 
 class Agent(Base):
     __tablename__ = "agents"
-    session_id = Column(String(255), primary_key=True, nullable=False)
-    name = Column(String(255), nullable=False)
-    host_id = Column(Integer, ForeignKey("hosts.id"), nullable=True)
-    host = relationship(Host, lazy="joined")
-    listener = Column(String(255), nullable=False)
-    language = Column(String(255))
-    language_version = Column(String(255))
-    delay = Column(Integer)
-    jitter = Column(Float)
-    external_ip = Column(String(255))
-    internal_ip = Column(Text)
-    username = Column(Text)
-    high_integrity = Column(Boolean)
-    process_name = Column(Text)
-    process_id = Column(Integer)
-    hostname = Column(String(255))
-    os_details = Column(String(255))
-    session_key = Column(String(255))
-    nonce = Column(String(255))
-    firstseen_time = Column(UtcDateTime, default=utcnow())
+    # Covers AgentService.get_for_listener (listener + archived filter,
+    # called on every per-listener active-agents fetch).
+    __table_args__ = (Index("ix_agents_listener_archived", "listener", "archived"),)
+    session_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    host_id: Mapped[int | None] = mapped_column(ForeignKey("hosts.id"))
+    # `host` defaults to lazy="select"; the hot path
+    # (agent_communication_service) only reads `agent.host_id` and never
+    # the `.host` object, so the previous `lazy="joined"` was wasting a
+    # LEFT JOIN on every Agent PK lookup. Where the host object IS
+    # needed (e.g. agent task DTO), the caller adds an explicit
+    # `joinedload(Agent.host)`.
+    host: Mapped["Host | None"] = relationship()
+    listener: Mapped[str] = mapped_column(String(255))
+    language: Mapped[str | None] = mapped_column(String(255))
+    language_version: Mapped[str | None] = mapped_column(String(255))
+    delay: Mapped[int | None]
+    jitter: Mapped[float | None]
+    external_ip: Mapped[str | None] = mapped_column(String(255))
+    internal_ip: Mapped[str | None] = mapped_column(Text)
+    username: Mapped[str | None] = mapped_column(Text)
+    high_integrity: Mapped[bool | None]
+    process_name: Mapped[str | None] = mapped_column(Text)
+    process_id: Mapped[int | None]
+    hostname: Mapped[str | None] = mapped_column(String(255))
+    os_details: Mapped[str | None] = mapped_column(String(255))
+    session_key: Mapped[str | None] = mapped_column(String(255))
+    nonce: Mapped[str | None] = mapped_column(String(255))
+    firstseen_time: Mapped[datetime | None] = mapped_column(
+        UtcDateTime, default=utcnow()
+    )
     checkins: Mapped[list[AgentCheckIn]] = relationship(
         "AgentCheckIn",
         order_by="desc(AgentCheckIn.checkin_time)",
         lazy="dynamic",
         cascade="all, delete",
     )
-    parent = Column(String(255))
-    children = Column(String(255))
-    servers = Column(String(255))
-    profile = Column(Text)
-    functions = Column(String(255))
-    kill_date = Column(String(255))
-    working_hours = Column(String(255))
-    lost_limit = Column(Integer)
-    notes = Column(Text)
-    architecture = Column(String(255))
-    archived = Column(Boolean, nullable=False)
-    socks = Column(Boolean)
-    socks_port = Column(Integer)
-    tags = relationship("Tag", secondary=agent_tag_assc)
+    parent: Mapped[str | None] = mapped_column(String(255))
+    children: Mapped[str | None] = mapped_column(String(255))
+    servers: Mapped[str | None] = mapped_column(String(255))
+    profile: Mapped[str | None] = mapped_column(Text)
+    functions: Mapped[str | None] = mapped_column(String(255))
+    kill_date: Mapped[str | None] = mapped_column(String(255))
+    working_hours: Mapped[str | None] = mapped_column(String(255))
+    lost_limit: Mapped[int | None]
+    notes: Mapped[str | None] = mapped_column(Text)
+    architecture: Mapped[str | None] = mapped_column(String(255))
+    archived: Mapped[bool]
+    socks: Mapped[bool | None]
+    socks_port: Mapped[int | None]
+    tags: Mapped[list["Tag"]] = relationship(secondary=agent_tag_assc)
 
     @hybrid_property
     def lastseen_time(self):
@@ -347,27 +366,32 @@ class Agent(Base):
 
 class AgentFile(Base):
     __tablename__ = "agent_files"
-    id = Column(Integer, primary_key=True)
-    session_id = Column(String(50))
-    name = Column(Text, nullable=False)
-    path = Column(Text, nullable=False)
-    is_file = Column(Boolean, nullable=False)
-    parent_id = Column(
-        Integer, ForeignKey("agent_files.id", ondelete="CASCADE"), nullable=True
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Indexed for AgentFileService / AgentCommunicationService lookups
+    # by agent session_id (file-tree navigation + download wiring).
+    session_id: Mapped[str | None] = mapped_column(String(50), index=True)
+    name: Mapped[str] = mapped_column(Text)
+    path: Mapped[str] = mapped_column(Text)
+    is_file: Mapped[bool]
+    # Indexed for the parent_id == ? child-listing filter in
+    # agent_file_service / agent_communication_service.
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_files.id", ondelete="CASCADE"), index=True
     )
-    downloads = relationship("Download", secondary=agent_file_download_assc)
+    downloads: Mapped[list["Download"]] = relationship(
+        secondary=agent_file_download_assc
+    )
 
 
 class HostProcess(Base):
     __tablename__ = "host_processes"
-    host_id = Column(Integer, ForeignKey("hosts.id"), primary_key=True)
-    process_id = Column(Integer, primary_key=True)
-    process_name = Column(Text)
-    architecture = Column(String(255))
-    user = Column(String(255))
-    stale = Column(Boolean, default=False)
-    agent = relationship(
-        Agent,
+    host_id: Mapped[int] = mapped_column(ForeignKey("hosts.id"), primary_key=True)
+    process_id: Mapped[int] = mapped_column(primary_key=True)
+    process_name: Mapped[str | None] = mapped_column(Text)
+    architecture: Mapped[str | None] = mapped_column(String(255))
+    user: Mapped[str | None] = mapped_column(String(255))
+    stale: Mapped[bool | None] = mapped_column(default=False)
+    agent: Mapped["Agent | None"] = relationship(
         lazy="joined",
         primaryjoin="and_(Agent.process_id==foreign(HostProcess.process_id), Agent.host_id==foreign(HostProcess.host_id), Agent.archived == False)",
     )
@@ -375,9 +399,9 @@ class HostProcess(Base):
 
 class Config(Base):
     __tablename__ = "config"
-    staging_key = Column(String(255), primary_key=True)
-    jwt_secret_key = Column(Text, nullable=False)
-    ip_filtering = Column(Boolean, nullable=False)
+    staging_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    jwt_secret_key: Mapped[str] = mapped_column(Text)
+    ip_filtering: Mapped[bool]
 
     def __repr__(self):
         return f"<Config(staging_key='{self.staging_key}')>"
@@ -391,20 +415,20 @@ class Config(Base):
 
 class Credential(Base):
     __tablename__ = "credentials"
-    id = Column(Integer, Sequence("credential_id_seq"), primary_key=True)
-    credtype = Column(String(255))
-    domain = Column(Text)
-    username = Column(Text)
-    password = Column(Text)
-    host = Column(Text)
-    os = Column(String(255))
-    sid = Column(String(255))
-    notes = Column(Text)
-    created_at = Column(UtcDateTime, default=utcnow(), nullable=False)
-    updated_at = Column(
-        UtcDateTime, default=utcnow(), onupdate=utcnow(), nullable=False
+    id: Mapped[int] = mapped_column(Sequence("credential_id_seq"), primary_key=True)
+    credtype: Mapped[str | None] = mapped_column(String(255))
+    domain: Mapped[str | None] = mapped_column(Text)
+    username: Mapped[str | None] = mapped_column(Text)
+    password: Mapped[str | None] = mapped_column(Text)
+    host: Mapped[str | None] = mapped_column(Text)
+    os: Mapped[str | None] = mapped_column(String(255))
+    sid: Mapped[str | None] = mapped_column(String(255))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), onupdate=utcnow()
     )
-    tags = relationship("Tag", secondary=credential_tag_assc)
+    tags: Mapped[list["Tag"]] = relationship(secondary=credential_tag_assc)
 
     def __repr__(self):
         return f"<Credential(id='{self.id}')>"
@@ -418,15 +442,15 @@ class Credential(Base):
 
 class Download(Base):
     __tablename__ = "downloads"
-    id = Column(Integer, Sequence("download_seq"), primary_key=True)
-    location = Column(Text, nullable=False)
-    filename = Column(Text, nullable=True)
-    size = Column(Integer, nullable=True)
-    created_at = Column(UtcDateTime, default=utcnow(), nullable=False)
-    updated_at = Column(
-        UtcDateTime, default=utcnow(), onupdate=utcnow(), nullable=False
+    id: Mapped[int] = mapped_column(Sequence("download_seq"), primary_key=True)
+    location: Mapped[str] = mapped_column(Text)
+    filename: Mapped[str | None] = mapped_column(Text)
+    size: Mapped[int | None]
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), onupdate=utcnow()
     )
-    tags = relationship("Tag", secondary=download_tag_assc)
+    tags: Mapped[list["Tag"]] = relationship(secondary=download_tag_assc)
 
     def get_base64_file(self):
         return base64.b64encode(self.get_bytes_file()).decode("utf-8")
@@ -445,36 +469,41 @@ class AgentTaskStatus(enum.StrEnum):
 
 class AgentTask(Base):
     __tablename__ = "agent_tasks"
-    id = Column(Integer, primary_key=True)
-    agent_id = Column(
-        String(255),
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[str] = mapped_column(
         ForeignKey("agents.session_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    agent = relationship(Agent, lazy="joined", innerjoin=True)
-    input = Column(Text)
-    input_full = deferred(Column(Text().with_variant(mysql.LONGTEXT, "mysql")))
-    output = deferred(
-        Column(Text().with_variant(mysql.LONGTEXT, "mysql"), nullable=True)
+    agent: Mapped["Agent"] = relationship(lazy="joined", innerjoin=True)
+    input: Mapped[str | None] = mapped_column(Text)
+    input_full: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT, "mysql"), deferred=True
+    )
+    output: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT, "mysql"), deferred=True
     )
     # In most cases, this isn't needed and will match output.
     #  However, with the filter feature, we want to store
     # a copy of the original output if it gets modified by a filter.
-    original_output = deferred(
-        Column(Text().with_variant(mysql.LONGTEXT, "mysql"), nullable=True)
+    original_output: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT, "mysql"), deferred=True
     )
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    user = relationship(User)
-    created_at = Column(UtcDateTime, default=utcnow(), nullable=False)
-    updated_at = Column(
-        UtcDateTime, default=utcnow(), onupdate=utcnow(), nullable=False
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    user: Mapped["User | None"] = relationship()
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), onupdate=utcnow()
     )
-    module_name = Column(Text)
-    module_options = Column(JSON)
-    task_name = Column(Text)
-    status = Column(Enum(AgentTaskStatus), index=True)
-    downloads = relationship("Download", secondary=agent_task_download_assc)
-    tags = relationship("Tag", secondary=agent_task_tag_assc)
+    module_name: Mapped[str | None] = mapped_column(Text)
+    module_options: Mapped[dict | None] = mapped_column(JSON)
+    task_name: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[AgentTaskStatus | None] = mapped_column(
+        Enum(AgentTaskStatus), index=True
+    )
+    downloads: Mapped[list["Download"]] = relationship(
+        secondary=agent_task_download_assc
+    )
+    tags: Mapped[list["Tag"]] = relationship(secondary=agent_task_tag_assc)
 
     def __repr__(self):
         return f"<AgentTask(id='{self.id}')>"
@@ -488,15 +517,15 @@ class AgentTask(Base):
 
 class Plugin(Base):
     __tablename__ = "plugins"
-    id = Column(String(255), primary_key=True)
-    name = Column(String(255), nullable=False)
-    enabled = Column(Boolean, nullable=False)
-    settings = Column(JSON)
-    settings_initialized = Column(Boolean, nullable=False, default=False)
-    internal_state = Column(JSON)
-    info = Column(PydanticType(PluginInfo), nullable=False)
-    load_error = Column(Text, nullable=True)
-    installed_version = Column(String(255), nullable=False, default="unknown")
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    enabled: Mapped[bool]
+    settings: Mapped[dict | None] = mapped_column(JSON)
+    settings_initialized: Mapped[bool] = mapped_column(default=False)
+    internal_state: Mapped[dict | None] = mapped_column(JSON)
+    info: Mapped[PluginInfo] = mapped_column(PydanticType(PluginInfo))
+    load_error: Mapped[str | None] = mapped_column(Text)
+    installed_version: Mapped[str] = mapped_column(String(255), default="unknown")
 
 
 class PluginTaskStatus(enum.StrEnum):
@@ -509,24 +538,30 @@ class PluginTaskStatus(enum.StrEnum):
 
 class PluginTask(Base):
     __tablename__ = "plugin_tasks"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    plugin_id = Column(String(255), ForeignKey("plugins.id"), nullable=False)
-    input = Column(Text)
-    input_full = deferred(Column(Text().with_variant(mysql.LONGTEXT, "mysql")))
-    output = deferred(
-        Column(Text().with_variant(mysql.LONGTEXT, "mysql"), nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    plugin_id: Mapped[str] = mapped_column(ForeignKey("plugins.id"))
+    input: Mapped[str | None] = mapped_column(Text)
+    input_full: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT, "mysql"), deferred=True
     )
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    user = relationship(User)
-    created_at = Column(UtcDateTime, default=utcnow(), nullable=False)
-    updated_at = Column(
-        UtcDateTime, default=utcnow(), onupdate=utcnow(), nullable=False
+    output: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT, "mysql"), deferred=True
     )
-    plugin_options = Column(JSON)
-    task_name = Column(Text)
-    status = Column(Enum(PluginTaskStatus), index=True)
-    downloads = relationship("Download", secondary=plugin_task_download_assc)
-    tags = relationship("Tag", secondary=plugin_task_tag_assc)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    user: Mapped["User | None"] = relationship()
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), onupdate=utcnow()
+    )
+    plugin_options: Mapped[dict | None] = mapped_column(JSON)
+    task_name: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[PluginTaskStatus | None] = mapped_column(
+        Enum(PluginTaskStatus), index=True
+    )
+    downloads: Mapped[list["Download"]] = relationship(
+        secondary=plugin_task_download_assc
+    )
+    tags: Mapped[list["Tag"]] = relationship(secondary=plugin_task_tag_assc)
 
     def __repr__(self):
         return f"<PluginTask(id='{self.id}')>"
@@ -534,20 +569,20 @@ class PluginTask(Base):
 
 class PluginRegistry(Base):
     __tablename__ = "plugin_registry"
-    name = Column(String(255), nullable=False, primary_key=True)
-    location = Column(Text, nullable=True)
-    url = Column(Text, nullable=True)
-    data = Column(JSON, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    location: Mapped[str | None] = mapped_column(Text)
+    url: Mapped[str | None] = mapped_column(Text)
+    data: Mapped[dict] = mapped_column(JSON)
 
 
 class Keyword(Base):
     __tablename__ = "keywords"
-    id = Column(Integer, Sequence("keyword_seq"), primary_key=True)
-    keyword = Column(String(255), unique=True)
-    replacement = Column(String(255))
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow())
-    updated_at = Column(
-        UtcDateTime, default=utcnow(), onupdate=utcnow(), nullable=False
+    id: Mapped[int] = mapped_column(Sequence("keyword_seq"), primary_key=True)
+    keyword: Mapped[str | None] = mapped_column(String(255), unique=True)
+    replacement: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), onupdate=utcnow()
     )
 
     def __repr__(self):
@@ -556,74 +591,74 @@ class Keyword(Base):
 
 class Module(Base):
     __tablename__ = "modules"
-    id = Column(String(255), primary_key=True)
-    name = Column(String(255), nullable=False)
-    enabled = Column(Boolean, nullable=False)
-    technique = Column(JSON)
-    tactic = Column(JSON)
-    software = Column(JSON)
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    enabled: Mapped[bool]
+    technique: Mapped[list | None] = mapped_column(JSON)
+    tactic: Mapped[list | None] = mapped_column(JSON)
+    software: Mapped[list | None] = mapped_column(JSON)
 
 
 class Profile(Base):
     __tablename__ = "profiles"
-    id = Column(Integer, Sequence("profile_seq"), primary_key=True)
-    name = Column(String(255), unique=True)
-    file_path = Column(String(255))
-    category = Column(String(255))
-    data = Column(Text, nullable=False)
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow())
-    updated_at = Column(
-        UtcDateTime, default=utcnow(), onupdate=utcnow(), nullable=False
+    id: Mapped[int] = mapped_column(Sequence("profile_seq"), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(255), unique=True)
+    file_path: Mapped[str | None] = mapped_column(String(255))
+    category: Mapped[str | None] = mapped_column(String(255))
+    data: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), onupdate=utcnow()
     )
 
 
 class Bypass(Base):
     __tablename__ = "bypasses"
-    id = Column(Integer, Sequence("bypass_seq"), primary_key=True)
-    name = Column(String(255), unique=True)
-    authors = Column(JSON)
-    code = Column(Text)
-    language = Column(String(255))
-    is_default = Column(Boolean, default=False, nullable=False)
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow())
-    updated_at = Column(
-        UtcDateTime, default=utcnow(), onupdate=utcnow(), nullable=False
+    id: Mapped[int] = mapped_column(Sequence("bypass_seq"), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(255), unique=True)
+    authors: Mapped[list | None] = mapped_column(JSON)
+    code: Mapped[str | None] = mapped_column(Text)
+    language: Mapped[str | None] = mapped_column(String(255))
+    is_default: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), onupdate=utcnow()
     )
 
 
 class Stager(Base):
     __tablename__ = "stagers"
-    id = Column(Integer, Sequence("stager_seq"), primary_key=True)
-    name = Column(String(255), unique=True)
-    module = Column(String(255))
-    options = Column(JSON)
-    downloads = relationship("Download", secondary=stager_download_assc)
-    one_liner = Column(Boolean)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow())
-    updated_at = Column(
-        UtcDateTime, default=utcnow(), onupdate=utcnow(), nullable=False
+    id: Mapped[int] = mapped_column(Sequence("stager_seq"), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(255), unique=True)
+    module: Mapped[str | None] = mapped_column(String(255))
+    options: Mapped[dict | None] = mapped_column(JSON)
+    downloads: Mapped[list["Download"]] = relationship(secondary=stager_download_assc)
+    one_liner: Mapped[bool | None]
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=utcnow(), onupdate=utcnow()
     )
 
 
 class ObfuscationConfig(Base):
     __tablename__ = "obfuscation_config"
-    language = Column(String(255), primary_key=True)
-    command = Column(Text)
-    module = Column(String(255))
-    enabled = Column(Boolean)
-    preobfuscatable = Column(Boolean)
+    language: Mapped[str] = mapped_column(String(255), primary_key=True)
+    command: Mapped[str | None] = mapped_column(Text)
+    module: Mapped[str | None] = mapped_column(String(255))
+    enabled: Mapped[bool | None]
+    preobfuscatable: Mapped[bool | None]
 
 
 class Tag(Base):
     __tablename__ = "tags"
-    id = Column(Integer, Sequence("tag_seq"), primary_key=True)
-    name = Column(String(255), nullable=False)
-    value = Column(String(255), nullable=False)
-    color = Column(String(12), nullable=True)
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow())
-    updated_at = Column(
-        UtcDateTime, nullable=False, onupdate=utcnow(), default=utcnow()
+    id: Mapped[int] = mapped_column(Sequence("tag_seq"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    value: Mapped[str] = mapped_column(String(255))
+    color: Mapped[str | None] = mapped_column(String(12))
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, onupdate=utcnow(), default=utcnow()
     )
 
 
@@ -634,11 +669,11 @@ class IpList(enum.StrEnum):
 
 class IP(Base):
     __tablename__ = "ips"
-    id = Column(Integer, Sequence("ip_seq"), primary_key=True)
-    ip_address = Column(String(255), nullable=False)
-    list = Column(Enum(IpList), nullable=False)
-    description = Column(Text, nullable=True)
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow())
-    updated_at = Column(
-        UtcDateTime, nullable=False, onupdate=utcnow(), default=utcnow()
+    id: Mapped[int] = mapped_column(Sequence("ip_seq"), primary_key=True)
+    ip_address: Mapped[str] = mapped_column(String(255))
+    list: Mapped[IpList] = mapped_column(Enum(IpList))
+    description: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, onupdate=utcnow(), default=utcnow()
     )

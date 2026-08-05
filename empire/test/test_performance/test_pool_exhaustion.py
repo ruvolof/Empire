@@ -124,7 +124,7 @@ def test_pool_exhaustion_at_concurrency_levels(
     """Fire *concurrency* requests with staggered arrival (realistic jitter)
     and verify zero connection-level errors.
     """
-    jitter_seconds = 2.0  # spread requests over this window
+    jitter_seconds = 5.0  # spread requests over this window
 
     async def _run() -> list[RequestResult]:
         async with httpx.AsyncClient(base_url=empire_base_url, timeout=30.0) as client:

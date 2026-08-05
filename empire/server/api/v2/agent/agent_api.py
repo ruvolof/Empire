@@ -1,4 +1,3 @@
-import math
 from datetime import datetime
 from typing import Annotated
 
@@ -17,7 +16,7 @@ from empire.server.api.v2.agent.agent_dto import (
     domain_to_dto_agent_checkin,
     domain_to_dto_agent_checkin_agg,
 )
-from empire.server.api.v2.shared_dependencies import AppCtx, CurrentSession
+from empire.server.api.v2.shared_dependencies import AppCtx, CurrentSession, paginate
 from empire.server.api.v2.shared_dto import (
     BadRequestResponse,
     NotFoundResponse,
@@ -82,10 +81,11 @@ def read_agent_checkins_all(
     )
     checkins = [domain_to_dto_agent_checkin(x) for x in checkins]
 
+    page, total_pages = paginate(total, page, limit)
     return AgentCheckIns(
         records=checkins,
         page=page,
-        total_pages=math.ceil(total / limit),
+        total_pages=total_pages,
         limit=limit,
         total=total,
     )
@@ -177,10 +177,11 @@ def read_agent_checkins(
     )
     checkins = [domain_to_dto_agent_checkin(x) for x in checkins]
 
+    page, total_pages = paginate(total, page, limit)
     return AgentCheckIns(
         records=checkins,
         page=page,
-        total_pages=math.ceil(total / limit),
+        total_pages=total_pages,
         limit=limit,
         total=total,
     )

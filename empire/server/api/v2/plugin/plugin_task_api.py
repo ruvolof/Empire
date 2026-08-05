@@ -1,4 +1,3 @@
-import math
 from datetime import datetime
 from typing import Annotated
 
@@ -12,7 +11,7 @@ from empire.server.api.v2.plugin.plugin_task_dto import (
     PluginTasks,
     domain_to_dto_plugin_task,
 )
-from empire.server.api.v2.shared_dependencies import AppCtx, CurrentSession
+from empire.server.api.v2.shared_dependencies import AppCtx, CurrentSession, paginate
 from empire.server.api.v2.shared_dto import (
     BadRequestResponse,
     NotFoundResponse,
@@ -135,10 +134,11 @@ def read_tasks_all_plugins(
         domain_to_dto_plugin_task(x, include_full_input, include_output) for x in tasks
     ]
 
+    page, total_pages = paginate(total, page, limit)
     return PluginTasks(
         records=tasks_converted,
         page=page,
-        total_pages=math.ceil(total / limit),
+        total_pages=total_pages,
         limit=limit,
         total=total,
     )
@@ -181,10 +181,11 @@ def read_tasks(
         domain_to_dto_plugin_task(x, include_full_input, include_output) for x in tasks
     ]
 
+    page, total_pages = paginate(total, page, limit)
     return PluginTasks(
         records=tasks_converted,
         page=page,
-        total_pages=math.ceil(total / limit) if limit > 0 else page,
+        total_pages=total_pages,
         limit=limit,
         total=total,
     )

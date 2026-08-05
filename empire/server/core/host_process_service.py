@@ -1,6 +1,6 @@
 import typing
 
-from sqlalchemy import and_
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from empire.server.core.db import models
@@ -15,21 +15,17 @@ class HostProcessService:
 
     @staticmethod
     def get_processes_for_host(db: Session, db_host: models.Host):
-        return (
-            db.query(models.HostProcess)
-            .filter(models.HostProcess.host_id == db_host.id)
-            .all()
-        )
+        return db.scalars(
+            select(models.HostProcess).where(models.HostProcess.host_id == db_host.id)
+        ).all()
 
     @staticmethod
     def get_process_for_host(db: Session, db_host: models.Host, uid: int):
-        return (
-            db.query(models.HostProcess)
-            .filter(
+        return db.scalars(
+            select(models.HostProcess).where(
                 and_(
                     models.HostProcess.process_id == uid,
                     models.HostProcess.host_id == db_host.id,
                 )
             )
-            .first()
-        )
+        ).first()

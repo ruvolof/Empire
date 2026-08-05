@@ -8,7 +8,14 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
 
-from sqlalchemy import Index, UniqueConstraint, create_engine, event, text
+from sqlalchemy import (
+    Index,
+    UniqueConstraint,
+    create_engine,
+    event,
+    select,
+    text,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import close_all_sessions, sessionmaker
@@ -41,11 +48,10 @@ def try_create_engine(engine_url: str, *args, **kwargs) -> Engine:
     try:
         with engine.connect():
             pass
-    except OperationalError as e:
-        log.error(e, exc_info=True)
-        log.error(f"Failed connecting to database using {engine_url}")
-        log.error("Perhaps the MySQL service is not running.")
-        log.error("Try executing: sudo systemctl start mysql")
+    except OperationalError:
+        log.exception(f"Failed connecting to database using {engine_url}")
+        log.info("Perhaps the MySQL service is not running.")
+        log.info("Try executing: sudo systemctl start mysql")
         sys.exit(1)
 
     return engine
@@ -168,6 +174,20 @@ def _alembic_cfg():
     return cfg
 
 
+def _get_head_revision() -> str:
+    """Return the head revision from versions/; raise RuntimeError if directory is empty."""
+    from alembic.script import ScriptDirectory
+
+    head = ScriptDirectory.from_config(_alembic_cfg()).get_current_head()
+    if head is None:
+        raise RuntimeError(
+            "Alembic: no head revision found. The versions/ directory is "
+            "empty or missing. This indicates a broken install — reinstall "
+            "Empire or restore empire/server/core/db/alembic/versions/."
+        )
+    return head
+
+
 def _get_alembic_revision():
     """Return the current Alembic revision, or None if untracked."""
     from alembic.migration import MigrationContext
@@ -229,7 +249,7 @@ def backup_db() -> Path | None:
                     dst_conn.close()
                     src_conn.close()
             except Exception:
-                log.error("SQLite backup failed.", exc_info=True)
+                log.exception("SQLite backup failed.")
                 dst.unlink(missing_ok=True)
                 return None
             log.info(f"SQLite database backed up to {dst}")
@@ -265,7 +285,11 @@ def backup_db() -> Path | None:
                 host,
             ]
             if len(parts) > 1:
-                cmd.extend(["-P", parts[1]])
+                # MySQL clients special-case `-h localhost` and use the Unix
+                # socket regardless of `-P`. Force TCP whenever a port is
+                # specified so the connection lands on the intended server,
+                # not whatever (if any) MySQL is bound to the host's socket.
+                cmd.extend(["-P", parts[1], "--protocol=tcp"])
             cmd.append(database_config.database_name)
 
             with dst.open("w") as outfile:
@@ -277,7 +301,7 @@ def backup_db() -> Path | None:
                         check=False,
                     )
                 except FileNotFoundError:
-                    log.error(
+                    log.exception(
                         "mysqldump not found on PATH. Install mysql-client "
                         "to enable MySQL backups."
                     )
@@ -292,7 +316,7 @@ def backup_db() -> Path | None:
             )
             dst.unlink(missing_ok=True)
         except Exception:
-            log.error("MySQL backup failed unexpectedly.", exc_info=True)
+            log.exception("MySQL backup failed unexpectedly.")
             dst.unlink(missing_ok=True)
         finally:
             if cnf_path is not None:
@@ -340,30 +364,30 @@ def startup_db():
 
             # When Empire starts up for the first time, it will create the database and create
             # these default records.
-            if len(db.query(models.User).all()) == 0:
+            if db.scalar(select(models.User)) is None:
                 log.info("Setting up database.")
                 log.info("Adding default user.")
                 db.add(get_default_user())
 
-            if len(db.query(models.Config).all()) == 0:
+            if db.scalar(select(models.Config)) is None:
                 log.info("Adding database config.")
                 db.add(get_default_config())
 
-            if len(db.query(models.Keyword).all()) == 0:
+            if db.scalar(select(models.Keyword)) is None:
                 log.info("Adding default keyword obfuscation functions.")
                 keywords = get_default_keyword_obfuscation()
 
                 for keyword in keywords:
                     db.add(keyword)
 
-            if len(db.query(models.ObfuscationConfig).all()) == 0:
+            if db.scalar(select(models.ObfuscationConfig)) is None:
                 log.info("Adding default obfuscation config.")
                 obf_configs = get_default_obfuscation_config()
 
                 for config in obf_configs:
                     db.add(config)
 
-            if len(db.query(models.IP).all()) == 0:
+            if db.scalar(select(models.IP)) is None:
                 ips = get_default_ips()
 
                 for ip in ips:
@@ -372,12 +396,11 @@ def startup_db():
             # Checking that schema matches the db.
             # Some errors don't manifest until query time.
             for model in models.Base.__subclasses__():
-                db.query(model).first()
+                db.scalar(select(model))
 
-    except Exception as e:
-        log.error(e, exc_info=True)
-        log.error("Failed to setup database.")
-        log.error(
+    except Exception:
+        log.exception("Failed to setup database.")
+        log.info(
             "If you have recently updated Empire, please run 'server --clean' to reset the database."
         )
         sys.exit(1)

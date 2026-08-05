@@ -1,12 +1,9 @@
 from __future__ import absolute_import
 
 import random
+import urllib.parse
 
-import six.moves.urllib.error
-import six.moves.urllib.parse
-import six.moves.urllib.request
 from pyparsing import *
-from six.moves import range
 
 from .transformation import Container, Terminator, Transform
 from .utility import MalleableError, MalleableObject, MalleableUtil
@@ -40,7 +37,7 @@ class MalleableRequest(MalleableObject):
     def _defaults(self):
         """Default initialization for the MalleableRequest object."""
         super(MalleableRequest, self)._defaults()
-        self._url = six.moves.urllib.parse.SplitResult("http", "", "/", "", "")
+        self._url = urllib.parse.SplitResult("http", "", "/", "", "")
         self.verb = "GET"
         self.extra = ""
         self.headers = {}
@@ -197,7 +194,7 @@ class MalleableRequest(MalleableObject):
         extra = self.extra
         if isinstance(extra, bytes):
             extra = extra.decode("Latin-1")
-        url = six.moves.urllib.parse.urlunsplit(self._url) + extra
+        url = urllib.parse.urlunsplit(self._url) + extra
         return url
 
     @url.setter
@@ -216,7 +213,7 @@ class MalleableRequest(MalleableObject):
                 )
         else:
             url = "http://" + url
-        temp = six.moves.urllib.parse.urlsplit(url, allow_fragments=False)
+        temp = urllib.parse.urlsplit(url, allow_fragments=False)
         self._url = temp
         if temp.query != "":
             self.path = temp[2] + "?" + temp[3]
@@ -361,7 +358,7 @@ class MalleableRequest(MalleableObject):
         Returns:
             dict (str, str): parameters
         """
-        return dict(six.moves.urllib.parse.parse_qsl(self._url.query))
+        return dict(urllib.parse.parse_qsl(self._url.query))
 
     @parameters.setter
     def parameters(self, parameters):
@@ -372,7 +369,7 @@ class MalleableRequest(MalleableObject):
         Args:
             parameters (dict(str, str))
         """
-        query = six.moves.urllib.parse.urlencode(parameters) if parameters else ""
+        query = urllib.parse.urlencode(parameters) if parameters else ""
         self._url = self._url._replace(query=query)
 
     def parameter(self, parameter, value):
@@ -460,14 +457,14 @@ class MalleableRequest(MalleableObject):
         if terminator.type == Terminator.HEADER:
             data = self.get_header(terminator.arg)
             if data:
-                data = six.moves.urllib.parse.unquote_to_bytes(data).decode("Latin-1")
+                data = urllib.parse.unquote_to_bytes(data).decode("Latin-1")
         elif terminator.type == Terminator.PARAMETER:
             data = self.get_parameter(terminator.arg)
             if data:
-                data = six.moves.urllib.parse.unquote_to_bytes(data).decode("Latin-1")
+                data = urllib.parse.unquote_to_bytes(data).decode("Latin-1")
         elif terminator.type == Terminator.URIAPPEND:
             if self.extra:
-                data = six.moves.urllib.parse.unquote_to_bytes(self.extra).decode(
+                data = urllib.parse.unquote_to_bytes(self.extra).decode(
                     "Latin-1"
                 )
             elif original.parameters:
@@ -481,7 +478,7 @@ class MalleableRequest(MalleableObject):
                     ):
                         data = known.split(known)[-1]
                         if data:
-                            data = six.moves.urllib.parse.unquote_to_bytes(data).decode(
+                            data = urllib.parse.unquote_to_bytes(data).decode(
                                 "Latin-1"
                             )
                         break
@@ -491,7 +488,7 @@ class MalleableRequest(MalleableObject):
                     if known.lower() in shown.lower() and len(shown) > len(known):
                         data = shown.split(known)[-1]
                         if data:
-                            data = six.moves.urllib.parse.unquote_to_bytes(data).decode(
+                            data = urllib.parse.unquote_to_bytes(data).decode(
                                 "Latin-1"
                             )
                         break
@@ -643,7 +640,7 @@ class MalleableResponse(MalleableObject):
         if terminator.type == Terminator.HEADER:
             data = self.get_header(terminator.arg)
             if data:
-                data = six.moves.urllib.parse.unquote_to_bytes(data).decode("latin-1")
+                data = urllib.parse.unquote_to_bytes(data).decode("latin-1")
         elif terminator.type == Terminator.PRINT:
             data = self.body
         return data

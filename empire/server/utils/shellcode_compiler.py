@@ -156,7 +156,7 @@ def _compile_pic(code: str, linker_script: Path) -> bytes:
                 "apt install gcc-mingw-w64-x86-64"
             ) from None
         except subprocess.CalledProcessError as e:
-            log.error("PIC shellcode compilation failed: %s", e.stderr)
+            log.exception("PIC shellcode compilation failed: %s", e.stderr)
             raise ModuleExecutionException(
                 f"PIC shellcode compilation failed: {e.stderr}"
             ) from e
@@ -174,7 +174,7 @@ def _compile_pic(code: str, linker_script: Path) -> bytes:
         try:
             subprocess.run(extract_args, capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as e:
-            log.error("objcopy .text extraction failed: %s", e.stderr)
+            log.exception("objcopy .text extraction failed: %s", e.stderr)
             raise ModuleExecutionException(
                 f"objcopy .text extraction failed: {e.stderr}"
             ) from e

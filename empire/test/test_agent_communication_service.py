@@ -1,4 +1,5 @@
 import os
+import string
 import struct
 import zlib
 
@@ -585,3 +586,11 @@ def test_handle_agent_response_survives_cache_pop_between_check_and_subscript(
         agent_communication_service.agents = original_agents
 
     assert result is None
+
+
+def test_generate_sessionid_shape(agent_communication_service):
+    valid = set(string.ascii_uppercase + string.digits)
+    for _ in range(50):
+        sid = agent_communication_service.generate_sessionid()
+        assert len(sid) == 8  # noqa: PLR2004
+        assert set(sid) <= valid

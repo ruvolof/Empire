@@ -3,6 +3,7 @@ import logging
 import typing
 
 import yaml
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from empire.server.core.config.config_manager import empire_config
@@ -45,9 +46,11 @@ class BypassService:
                 is_default = yaml_bypass["name"] in default_bypass_names
 
                 if (
-                    db.query(models.Bypass)
-                    .filter(models.Bypass.name == yaml_bypass["name"])
-                    .first()
+                    db.scalars(
+                        select(models.Bypass).where(
+                            models.Bypass.name == yaml_bypass["name"]
+                        )
+                    ).first()
                     is None
                 ):
                     yaml_bypass["script"] = ps_convert_to_oneliner(
@@ -63,31 +66,33 @@ class BypassService:
                     db.add(my_model)
                 else:
                     # Update existing bypass's is_default flag
-                    existing = (
-                        db.query(models.Bypass)
-                        .filter(models.Bypass.name == yaml_bypass["name"])
-                        .first()
-                    )
+                    existing = db.scalars(
+                        select(models.Bypass).where(
+                            models.Bypass.name == yaml_bypass["name"]
+                        )
+                    ).first()
                     existing.is_default = is_default
                 db.flush()
-            except Exception as e:
-                log.error(e)
+            except Exception:
+                log.exception("Error loading default bypass from %s", file_path)
 
     @staticmethod
     def get_all(db: Session, default: bool | None = None):
-        query = db.query(models.Bypass)
+        stmt = select(models.Bypass)
         if default:
-            query = query.filter(models.Bypass.is_default)
+            stmt = stmt.where(models.Bypass.is_default)
 
-        return query.all()
+        return db.scalars(stmt).all()
 
     @staticmethod
     def get_by_id(db: Session, uid: int):
-        return db.query(models.Bypass).filter(models.Bypass.id == uid).first()
+        return db.scalars(select(models.Bypass).where(models.Bypass.id == uid)).first()
 
     @staticmethod
     def get_by_name(db: Session, name: str):
-        return db.query(models.Bypass).filter(models.Bypass.name == name).first()
+        return db.scalars(
+            select(models.Bypass).where(models.Bypass.name == name)
+        ).first()
 
     @staticmethod
     def delete_bypass(db: Session, bypass: models.Bypass):
@@ -121,5 +126,5 @@ class BypassService:
         return db_bypass, None
 
     def delete_all_bypasses(self, db: Session):
-        db.query(models.Bypass).delete()
+        db.execute(delete(models.Bypass))
         db.flush()

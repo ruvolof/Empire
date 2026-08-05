@@ -1,5 +1,4 @@
 import base64
-import math
 from datetime import datetime
 from typing import Annotated
 
@@ -9,7 +8,7 @@ from starlette.status import HTTP_204_NO_CONTENT
 
 from empire.server.api.api_router import APIRouter
 from empire.server.api.jwt_auth import (
-    CurrentUser,
+    CurrentActiveUser,
     get_current_active_user,
 )
 from empire.server.api.v2.agent.agent_task_dto import (
@@ -32,7 +31,7 @@ from empire.server.api.v2.agent.agent_task_dto import (
     WorkingHoursPostRequest,
     domain_to_dto_task,
 )
-from empire.server.api.v2.shared_dependencies import AppCtx, CurrentSession
+from empire.server.api.v2.shared_dependencies import AppCtx, CurrentSession, paginate
 from empire.server.api.v2.shared_dto import (
     BadRequestResponse,
     NotFoundResponse,
@@ -165,10 +164,11 @@ def read_tasks_all_agents(
         for x in tasks
     ]
 
+    page, total_pages = paginate(total, page, limit)
     return AgentTasks(
         records=tasks_converted,
         page=page,
-        total_pages=math.ceil(total / limit),
+        total_pages=total_pages,
         limit=limit,
         total=total,
     )
@@ -216,10 +216,11 @@ def read_tasks(
         for x in tasks
     ]
 
+    page, total_pages = paginate(total, page, limit)
     return AgentTasks(
         records=tasks_converted,
         page=page,
-        total_pages=math.ceil(total / limit) if limit > 0 else page,
+        total_pages=total_pages,
         limit=limit,
         total=total,
     )
@@ -241,7 +242,7 @@ def read_task(
 @router.post("/{agent_id}/tasks/jobs", response_model=AgentTask)
 def create_task_jobs(
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -254,7 +255,7 @@ def create_task_jobs(
 def create_task_kill_job(
     jobs: KillJobPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -270,7 +271,7 @@ def create_task_kill_job(
 def create_task_stop_job(
     jobs: StopJobPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -286,7 +287,7 @@ def create_task_stop_job(
 def create_task_shell(
     shell_request: ShellPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -308,7 +309,7 @@ def create_task_shell(
 def create_task_module(
     module_request: ModulePostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -316,21 +317,20 @@ def create_task_module(
         resp, err = agent_task_service.create_task_module(
             db, db_agent, module_request, current_user
         )
-
-        # This is for backwards compatibility with modules returning
-        # tuples for exceptions. All modules should remove returning
-        # tuples in favor of raising exceptions by Empire 6.0
-        if err:
-            raise HTTPException(status_code=400, detail=err)
-    except HTTPException as e:
-        # Propagate the HTTPException from above
-        raise e from None
+    except HTTPException:
+        raise
     except ModuleValidationException as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except ModuleExecutionException as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # This is for backwards compatibility with modules returning
+    # tuples for exceptions. All modules should remove returning
+    # tuples in favor of raising exceptions by Empire 6.0
+    if err:
+        raise HTTPException(status_code=400, detail=err)
 
     return domain_to_dto_task(resp)
 
@@ -339,7 +339,7 @@ def create_task_module(
 def create_task_upload(
     upload_request: UploadPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     download_service: DownloadServiceDep,
     agent_task_service: AgentTaskServiceDep,
@@ -379,7 +379,7 @@ def create_task_upload(
 def create_task_download(
     download_request: DownloadPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -397,7 +397,7 @@ def create_task_download(
 def create_task_sysinfo(
     sysinfo_request: SysinfoPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -415,7 +415,7 @@ def create_task_sysinfo(
 def create_task_update_comms(
     comms_request: CommsPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -433,7 +433,7 @@ def create_task_update_comms(
 def create_task_update_sleep(
     sleep_request: SleepPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -451,7 +451,7 @@ def create_task_update_sleep(
 def create_task_update_kill_date(
     kill_date_request: KillDatePostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -471,7 +471,7 @@ def create_task_update_kill_date(
 def create_task_update_working_hours(
     working_hours_request: WorkingHoursPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -491,7 +491,7 @@ def create_task_update_working_hours(
 def create_task_update_directory_list(
     directory_list_request: DirectoryListPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -509,7 +509,7 @@ def create_task_update_directory_list(
 def create_task_exit(
     exit_request: ExitPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):
@@ -542,7 +542,7 @@ def delete_task(
 def create_task_socks(
     socks: SocksPostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     db_agent: AgentDep,
     agent_task_service: AgentTaskServiceDep,
 ):

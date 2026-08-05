@@ -2,7 +2,7 @@ import logging
 import typing
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload, undefer
 
 from empire.server.api.v2.plugin.plugin_task_dto import PluginTaskOrderOptions
@@ -38,22 +38,22 @@ class PluginTaskService:
         status: AgentTaskStatus | None = None,
         q: str | None = None,
     ):
-        query = db.query(
+        stmt = select(
             models.PluginTask, func.count(models.PluginTask.id).over().label("total")
         )
 
         if plugins:
-            query = query.filter(models.PluginTask.plugin_id.in_(plugins))
+            stmt = stmt.where(models.PluginTask.plugin_id.in_(plugins))
 
         if users:
             user_filters = [models.PluginTask.user_id.in_(users)]
             if 0 in users:
                 user_filters.append(models.PluginTask.user_id.is_(None))
-            query = query.filter(or_(*user_filters))
+            stmt = stmt.where(or_(*user_filters))
 
         if tags:
             tags_split = [tag.split(":", 1) for tag in tags]
-            query = query.join(models.PluginTask.tags).filter(
+            stmt = stmt.join(models.PluginTask.tags).where(
                 and_(
                     models.Tag.name.in_([tag[0] for tag in tags_split]),
                     models.Tag.value.in_([tag[1] for tag in tags_split]),
@@ -68,16 +68,16 @@ class PluginTaskService:
             query_options.append(undefer(models.PluginTask.input_full))
         if include_output:
             query_options.append(undefer(models.PluginTask.output))
-        query = query.options(*query_options)
+        stmt = stmt.options(*query_options)
 
         if since:
-            query = query.filter(models.PluginTask.updated_at > since)
+            stmt = stmt.where(models.PluginTask.updated_at > since)
 
         if status:
-            query = query.filter(models.AgentTask.status == status)
+            stmt = stmt.where(models.AgentTask.status == status)
 
         if q:
-            query = query.filter(
+            stmt = stmt.where(
                 or_(
                     models.PluginTask.input.like(f"%{q}%"),
                     models.PluginTask.output.like(f"%{q}%"),
@@ -94,14 +94,14 @@ class PluginTaskService:
             order_by_prop = models.PluginTask.id
 
         if order_direction == OrderDirection.asc:
-            query = query.order_by(order_by_prop.asc())
+            stmt = stmt.order_by(order_by_prop.asc())
         else:
-            query = query.order_by(order_by_prop.desc())
+            stmt = stmt.order_by(order_by_prop.desc())
 
         if limit > 0:
-            query = query.limit(limit).offset(offset)
+            stmt = stmt.limit(limit).offset(offset)
 
-        results = query.all()
+        results = db.execute(stmt).all()
 
         total = 0 if not results else results[0].total
         results = [x[0] for x in results]
@@ -112,11 +112,9 @@ class PluginTaskService:
         # TODO: Check all the uses of get_by_id
         plugin = self.plugin_service.get_by_id(db, plugin_id)
         if plugin:
-            task = (
-                db.query(models.PluginTask)
-                .filter(models.PluginTask.id == task_id)
-                .first()
-            )
+            task = db.scalars(
+                select(models.PluginTask).where(models.PluginTask.id == task_id)
+            ).first()
             if task:
                 return task
 

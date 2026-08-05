@@ -1,4 +1,3 @@
-import math
 from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Query
@@ -7,7 +6,7 @@ from starlette.status import HTTP_201_CREATED, HTTP_204_NO_CONTENT
 
 from empire.server.api.api_router import APIRouter
 from empire.server.api.jwt_auth import get_current_active_user
-from empire.server.api.v2.shared_dependencies import AppCtx, CurrentSession
+from empire.server.api.v2.shared_dependencies import AppCtx, CurrentSession, paginate
 from empire.server.api.v2.shared_dto import (
     BadRequestResponse,
     NotFoundResponse,
@@ -65,10 +64,11 @@ def get_tags(
 
     tags_converted = [domain_to_dto_tag(x) for x in tags]
 
+    page, total_pages = paginate(total, page, limit)
     return Tags(
         records=tags_converted,
         page=page,
-        total_pages=math.ceil(total / limit) if limit > 0 else page,
+        total_pages=total_pages,
         limit=limit,
         total=total,
     )

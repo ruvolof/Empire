@@ -59,7 +59,7 @@ starkiller:
   enabled: true
   repo: https://github.com/BC-SECURITY/Starkiller.git
   # Can be a branch, tag, or commit hash
-  ref: v3.5.0
+  ref: v3.6.0
 submodules:
   auto_update: true
 plugin_marketplace:
@@ -70,6 +70,9 @@ plugin_marketplace:
       file: registry.yaml
 directories:
   downloads: downloads
+  # Persistent on-disk caches (currently: Go build cache). Relative paths land
+  # under DATA_DIR (~/.local/share/empire); set to an absolute path to override.
+  cache: .cache
 logging:
   level: INFO
   simple_console: true

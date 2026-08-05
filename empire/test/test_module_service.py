@@ -1,4 +1,5 @@
 import base64
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from empire.server.core.exceptions import ModuleValidationException
+from empire.server.core.module_models import EmpireModule, LanguageEnum
 from empire.server.core.module_service import ModuleService
 from empire.server.core.obfuscation_service import ObfuscationService
 
@@ -1318,3 +1320,58 @@ def test_finalize_module_obfuscates_script_end_not_source(install_path):
     assert "SensitiveValue" not in result, (
         f"script_end string 'SensitiveValue' was not obfuscated:\n{result[:500]}"
     )
+
+
+def _make_custom_generate_module(path: Path) -> EmpireModule:
+    mod = EmpireModule(
+        id="custom_gen_test", name="custom_gen_test", language=LanguageEnum.python
+    )
+    mod.advanced.custom_generate = True
+    mod.advanced.custom_generate_path = str(path)
+    return mod
+
+
+def test_load_custom_generate_class_returns_cached(module_service, tmp_path):
+    mod = _make_custom_generate_module(tmp_path / "noop.py")
+    sentinel = object()
+    mod.advanced.generate_class = sentinel
+
+    assert module_service._load_custom_generate_class(mod) is sentinel
+
+
+def test_load_custom_generate_class_caches_after_first_call(module_service, tmp_path):
+    py = tmp_path / "lazy_load_once.py"
+    py.write_text("class Module:\n    pass\n")
+    mod = _make_custom_generate_module(py)
+
+    with patch(
+        "empire.server.core.module_service.importlib.util.module_from_spec",
+        wraps=importlib.util.module_from_spec,
+    ) as wrapped:
+        first = module_service._load_custom_generate_class(mod)
+        second = module_service._load_custom_generate_class(mod)
+
+    assert first is second
+    assert wrapped.call_count == 1
+
+
+def test_load_custom_generate_class_wraps_none_spec(module_service, tmp_path):
+    mod = _make_custom_generate_module(tmp_path / "doesnotmatter.py")
+    with (
+        patch(
+            "empire.server.core.module_service.importlib.util.spec_from_file_location",
+            return_value=None,
+        ),
+        pytest.raises(ModuleValidationException, match="cannot build import spec"),
+    ):
+        module_service._load_custom_generate_class(mod)
+
+
+def test_load_custom_generate_class_wraps_import_error(module_service, tmp_path):
+    py = tmp_path / "broken.py"
+    py.write_text("raise RuntimeError('boom')\n")
+    mod = _make_custom_generate_module(py)
+
+    with pytest.raises(ModuleValidationException, match="failed to load") as excinfo:
+        module_service._load_custom_generate_class(mod)
+    assert isinstance(excinfo.value.__cause__, RuntimeError)

@@ -1,14 +1,19 @@
 import base64
+import concurrent.futures
 import platform
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from empire.server.common import packets
 from empire.server.common.empire import MainMenu
+from empire.server.core.exceptions import ModuleExecutionException
 from empire.server.stagers.multi.generate_agent import Stager
 from empire.server.utils.file_util import run_as_user
+
+_MIN_GO_BUILD_ARGS = 2
 
 is_arm = platform.machine().startswith("arm") or platform.machine().startswith(
     "aarch64"
@@ -220,50 +225,265 @@ def test_generate_python_shellcode(stager_generation_service, arch, dot_net_vers
 
 
 @pytest.mark.slow
-def test_generate_go_stageless(stager_generation_service):
+def test_generate_go_stageless(stager_generation_service, tmp_path):
     """
     Test the generate_go_stageless function using a real listener (new-listener-1).
+    Asserts the regex against the renderer's returned string instead of a
+    global on-disk path.
     """
-    options = {"Listener": {"Value": "new-listener-1"}}
-
-    result = stager_generation_service.generate_go_stageless(options)
-
-    assert result is not None, "Stager generation failed, result is None."
-
-    generated_executable_path = result
-    assert Path(generated_executable_path).exists(), (
-        f"Generated executable not found: {generated_executable_path}"
+    install_path = stager_generation_service.main_menu.install_path
+    static_main_go = install_path / "data/agent/gopire/main.go"
+    assert not static_main_go.exists(), (
+        f"test pollution: stale main.go in canonical install tree at {static_main_go}"
     )
-
-    generated_main_go_path = (
-        stager_generation_service.main_menu.install_path / "data/agent/gopire/main.go"
-    )
-    assert generated_main_go_path.exists(), (
-        f"Generated main.go not found: {generated_main_go_path}"
-    )
-
-    main_go_content = generated_main_go_path.read_text()
-    staging_key_base64_match = re.search(
-        r'stagingKeyBase64\s*:=\s*"([^"]+)"', main_go_content
-    )
-
-    assert staging_key_base64_match, "stagingKeyBase64 not found in main.go"
-
-    extracted_staging_key_base64 = staging_key_base64_match.group(1)
 
     active_listener = (
         stager_generation_service.listener_service.get_active_listener_by_name(
             "new-listener-1"
         )
     )
-    staging_key = active_listener.options["StagingKey"]["Value"]
+    template_vars = stager_generation_service._build_template_vars(active_listener)
 
+    compiler = stager_generation_service.main_menu.go_compiler
+    rendered = compiler.generate_main_go(
+        "main.template", str(tmp_path / "main.go"), template_vars
+    )
+
+    staging_key_base64_match = re.search(r'stagingKeyBase64\s*:=\s*"([^"]+)"', rendered)
+    assert staging_key_base64_match, "stagingKeyBase64 not found in rendered main.go"
+
+    staging_key = active_listener.options["StagingKey"]["Value"]
     expected_staging_key_base64 = base64.b64encode(staging_key.encode("UTF-8")).decode(
         "UTF-8"
     )
-    assert extracted_staging_key_base64 == expected_staging_key_base64, (
-        f"StagingKeyBase64 mismatch: expected {expected_staging_key_base64}, got {extracted_staging_key_base64}"
+    assert staging_key_base64_match.group(1) == expected_staging_key_base64, (
+        f"StagingKeyBase64 mismatch: expected {expected_staging_key_base64}, "
+        f"got {staging_key_base64_match.group(1)}"
     )
+
+    options = {"Listener": {"Value": "new-listener-1"}}
+    result = stager_generation_service.generate_go_stageless(options)
+
+    assert result is not None, "Stager generation failed, result is None."
+    assert Path(result).exists(), f"Generated executable not found: {result}"
+    assert Path(result).stat().st_size > 0, f"Generated executable is empty: {result}"
+
+
+@pytest.mark.slow
+def test_compile_stager_concurrent_isolation(stager_generation_service):
+    """
+    Concurrent compile_stager calls each produce a binary with their own
+    staging key embedded — i.e. no cross-contamination from another in-flight
+    build's main.go. This exercises the actual race the static-path fix targets:
+    sequential calls would have passed under the buggy pre-fix code too because
+    each call ran to completion before the next one started.
+    """
+    install_path = stager_generation_service.main_menu.install_path
+    static_main_go = install_path / "data/agent/gopire/main.go"
+    assert not static_main_go.exists(), (
+        f"test pollution: stale main.go in canonical install tree at {static_main_go}"
+    )
+
+    active_listener = (
+        stager_generation_service.listener_service.get_active_listener_by_name(
+            "new-listener-1"
+        )
+    )
+    base_template_vars = stager_generation_service._build_template_vars(active_listener)
+
+    keys = [
+        "AAAAAAAAAAAAAAAAAAAAAA==",
+        "QkJCQkJCQkJCQkJCQkJCQkI=",
+        "Q0NDQ0NDQ0NDQ0NDQ0NDQ0M=",
+        "RERERERERERERERERERERFE=",
+    ]
+    template_vars_list = [{**base_template_vars, "STAGING_KEY": k} for k in keys]
+
+    compiler = stager_generation_service.main_menu.go_compiler
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(keys)) as executor:
+        futures = [
+            executor.submit(compiler.compile_stager, tv, "stager", "windows", "amd64")
+            for tv in template_vars_list
+        ]
+        binaries = [f.result() for f in futures]
+
+    assert len(set(binaries)) == len(binaries), (
+        f"compile_stager returned duplicate paths under concurrent calls: {binaries}"
+    )
+
+    for tv, binary_path in zip(template_vars_list, binaries, strict=True):
+        assert Path(binary_path).exists(), f"Binary missing: {binary_path}"
+        binary_bytes = Path(binary_path).read_bytes()
+        expected = tv["STAGING_KEY"].encode("ascii")
+        assert expected in binary_bytes, (
+            f"Binary {binary_path} does not contain its expected staging key "
+            f"{tv['STAGING_KEY']!r} — likely cross-contamination from another "
+            f"concurrent compile_stager call"
+        )
+
+    assert not static_main_go.exists(), (
+        f"compile_stager should not write main.go into the canonical install "
+        f"tree, but it exists at {static_main_go}"
+    )
+
+
+@pytest.mark.slow
+def test_compile_stager_preserves_main_go_on_build_failure(
+    stager_generation_service, monkeypatch
+):
+    """
+    When ``go build`` fails, the rendered main.go is preserved to a stable
+    temp file referenced in the exception message and survives
+    ``TemporaryDirectory`` cleanup so operators can inspect it post-mortem.
+    """
+    active_listener = (
+        stager_generation_service.listener_service.get_active_listener_by_name(
+            "new-listener-1"
+        )
+    )
+    template_vars = stager_generation_service._build_template_vars(active_listener)
+    compiler = stager_generation_service.main_menu.go_compiler
+
+    real_run = subprocess.run
+
+    def fake_run(args, **kwargs):
+        if (
+            isinstance(args, list)
+            and len(args) >= _MIN_GO_BUILD_ARGS
+            and args[1] == "build"
+        ):
+            return subprocess.CompletedProcess(
+                args=args, returncode=1, stdout="", stderr="forced build failure"
+            )
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr("empire.server.core.go.subprocess.run", fake_run)
+
+    with pytest.raises(ModuleExecutionException) as exc_info:
+        compiler.compile_stager(template_vars, "stager", goos="windows", goarch="amd64")
+
+    msg = str(exc_info.value)
+    assert "forced build failure" in msg, f"build error must reach caller, got: {msg}"
+
+    match = re.search(r"preserved at (\S+\.go)", msg)
+    assert match, f"preserved path missing from exception message: {msg}"
+
+    preserved = Path(match.group(1))
+    try:
+        assert preserved.exists(), f"preserved main.go does not exist: {preserved}"
+        content = preserved.read_text()
+        assert "stagingKeyBase64" in content, (
+            "preserved file must contain rendered template content"
+        )
+    finally:
+        preserved.unlink(missing_ok=True)
+
+
+@pytest.mark.slow
+def test_compile_stager_build_error_propagates_when_preservation_fails(
+    stager_generation_service, monkeypatch
+):
+    """
+    If preservation of the failed main.go itself fails (e.g. ENOSPC on /tmp),
+    the original ``go build`` error must still reach the caller — preservation
+    is a debugging aid and must never displace the real failure.
+    """
+    active_listener = (
+        stager_generation_service.listener_service.get_active_listener_by_name(
+            "new-listener-1"
+        )
+    )
+    template_vars = stager_generation_service._build_template_vars(active_listener)
+    compiler = stager_generation_service.main_menu.go_compiler
+
+    real_run = subprocess.run
+
+    def fake_run(args, **kwargs):
+        if (
+            isinstance(args, list)
+            and len(args) >= _MIN_GO_BUILD_ARGS
+            and args[1] == "build"
+        ):
+            return subprocess.CompletedProcess(
+                args=args, returncode=1, stdout="", stderr="forced build failure"
+            )
+        return real_run(args, **kwargs)
+
+    def failing_mkstemp(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("empire.server.core.go.subprocess.run", fake_run)
+    monkeypatch.setattr("empire.server.core.go.tempfile.mkstemp", failing_mkstemp)
+
+    with pytest.raises(ModuleExecutionException) as exc_info:
+        compiler.compile_stager(template_vars, "stager", goos="windows", goarch="amd64")
+
+    msg = str(exc_info.value)
+    assert "forced build failure" in msg, (
+        f"original build error must survive preservation failure, got: {msg}"
+    )
+    assert "failed to preserve" in msg, (
+        f"failure-to-preserve note expected in message, got: {msg}"
+    )
+
+
+def test_build_template_vars(stager_generation_service):
+    """`_build_template_vars` returns the same dict generate_go_stageless used to construct inline."""
+    active_listener = (
+        stager_generation_service.listener_service.get_active_listener_by_name(
+            "new-listener-1"
+        )
+    )
+
+    template_vars = stager_generation_service._build_template_vars(active_listener)
+
+    expected_keys = {
+        "PROFILE",
+        "HOST",
+        "SESSION_ID",
+        "KILL_DATE",
+        "WORKING_HOURS",
+        "DELAY",
+        "JITTER",
+        "LOST_LIMIT",
+        "STAGING_KEY",
+        "DEFAULT_RESPONSE",
+        "AGENT_PRIVATE_CERT_KEY",
+        "AGENT_PUBLIC_CERT_KEY",
+        "SERVER_PUBLIC_CERT_KEY",
+    }
+    assert set(template_vars.keys()) == expected_keys
+    assert template_vars["HOST"] == active_listener.host_address
+    assert template_vars["SESSION_ID"] == "00000000"
+
+    expected_staging_key = base64.b64encode(
+        active_listener.options["StagingKey"]["Value"].encode("UTF-8")
+    ).decode("UTF-8")
+    assert template_vars["STAGING_KEY"] == expected_staging_key
+
+
+@pytest.mark.slow
+def test_generate_main_go_returns_rendered_string(stager_generation_service, tmp_path):
+    """generate_main_go returns the rendered string in addition to writing it."""
+    active_listener = (
+        stager_generation_service.listener_service.get_active_listener_by_name(
+            "new-listener-1"
+        )
+    )
+    template_vars = stager_generation_service._build_template_vars(active_listener)
+
+    compiler = stager_generation_service.main_menu.go_compiler
+    output_path = tmp_path / "main.go"
+
+    rendered = compiler.generate_main_go(
+        "main.template", str(output_path), template_vars
+    )
+
+    assert isinstance(rendered, str), "generate_main_go must return the rendered string"
+    assert rendered == output_path.read_text(), (
+        "Returned string must match the bytes written to disk"
+    )
+    assert "stagingKeyBase64" in rendered, "Render did not produce expected content"
 
 
 @pytest.mark.parametrize(

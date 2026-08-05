@@ -45,7 +45,7 @@ def get_default_keyword_obfuscation():
             models.Keyword(
                 keyword=value,
                 replacement="".join(
-                    random.choice(string.ascii_uppercase + string.digits)
+                    random.choice(string.ascii_uppercase + string.digits)  # noqa: S311 - obfuscation keyword alias, not security-sensitive
                     for _ in range(5)
                 ),
             )
@@ -94,7 +94,8 @@ def get_staging_key():
 
     if not staging_key:
         log.info("Generating random staging key")
-        return "".join(random.choices(valid_chars, k=expected_length))
+        # Staging key is agent<->server crypto material, so use a CSPRNG.
+        return "".join(secrets.choice(valid_chars) for _ in range(expected_length))
 
     log.info("Using preset staging key")
 

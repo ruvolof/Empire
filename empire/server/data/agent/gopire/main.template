@@ -103,7 +103,7 @@ func main() {
 	delay := {{ DELAY }}
 	jitter := {{ JITTER }}
 	lostLimit := {{ LOST_LIMIT }}
-    stagingKeyBase64 := "{{ STAGING_KEY | safe }}"
+    stagingKeyBase64 := "{{ STAGING_KEY }}"
 	defaultResponse := "{{ DEFAULT_RESPONSE }}"
 	agent_private_cert_key_encoded := "{{ AGENT_PRIVATE_CERT_KEY }}"
 	agent_public_cert_key_encoded := "{{ AGENT_PUBLIC_CERT_KEY }}"

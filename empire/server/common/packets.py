@@ -71,6 +71,8 @@ import logging
 import os
 import struct
 
+from empire.server.core import protocol_constants as proto
+
 from . import encryption
 
 log = logging.getLogger(__name__)
@@ -223,7 +225,7 @@ def parse_result_packet(packet, offset=0):
 
         # todo: agent returns resultpacket in big endian instead of little for type 44 with outpipe in powershell.
         # This should be fixed and removed at some point.
-        if responseID == 10240:  # noqa: PLR2004
+        if responseID == proto.RESPONSE_ID_ENDIANNESS_FALLBACK:
             responseID = int.from_bytes(
                 packet[0 + offset : 2 + offset], byteorder="big"
             )

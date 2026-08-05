@@ -1,6 +1,6 @@
 import typing
 
-from sqlalchemy import and_
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from empire.server.core.db import models
@@ -17,29 +17,25 @@ class AgentFileService:
     def get_file(
         db: Session, agent_id: str, uid: int
     ) -> tuple[models.AgentFile, list[models.AgentFile]] | None:
-        found = (
-            db.query(models.AgentFile)
-            .filter(
+        found = db.scalars(
+            select(models.AgentFile).where(
                 and_(
                     models.AgentFile.session_id == agent_id, models.AgentFile.id == uid
                 )
             )
-            .first()
-        )
+        ).first()
 
         if not found:
             return None
 
-        children = (
-            db.query(models.AgentFile)
-            .filter(
+        children = db.scalars(
+            select(models.AgentFile).where(
                 and_(
                     models.AgentFile.session_id == agent_id,
                     models.AgentFile.parent_id == found.id,
                 )
             )
-            .all()
-        )
+        ).all()
 
         return found, children
 
@@ -47,29 +43,25 @@ class AgentFileService:
     def get_file_by_path(
         db: Session, agent_id: str, path: str
     ) -> tuple[models.AgentFile, list[models.AgentFile]] | None:
-        found = (
-            db.query(models.AgentFile)
-            .filter(
+        found = db.scalars(
+            select(models.AgentFile).where(
                 and_(
                     models.AgentFile.session_id == agent_id,
                     models.AgentFile.path == path,
                 )
             )
-            .first()
-        )
+        ).first()
 
         if not found:
             return None
 
-        children = (
-            db.query(models.AgentFile)
-            .filter(
+        children = db.scalars(
+            select(models.AgentFile).where(
                 and_(
                     models.AgentFile.session_id == agent_id,
                     models.AgentFile.parent_id == found.id,
                 )
             )
-            .all()
-        )
+        ).all()
 
         return found, children

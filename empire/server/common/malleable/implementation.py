@@ -4,7 +4,6 @@ import random
 import string
 
 from pyparsing import *
-from six.moves import range
 
 from .transaction import MalleableRequest, MalleableResponse, Transaction
 from .transformation import Container

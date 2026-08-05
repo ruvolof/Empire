@@ -1,7 +1,7 @@
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import Depends, File, HTTPException, UploadFile
+from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from starlette import status
 
@@ -16,7 +16,11 @@ from empire.server.api.jwt_auth import (
     get_current_active_user,
     get_password_hash,
 )
-from empire.server.api.v2.shared_dependencies import AppCtx, CurrentSession
+from empire.server.api.v2.shared_dependencies import (
+    AppCtx,
+    CurrentSession,
+    SafeUploadFile,
+)
 from empire.server.api.v2.shared_dto import BadRequestResponse, NotFoundResponse
 from empire.server.api.v2.user.user_dto import (
     User,
@@ -187,7 +191,7 @@ def create_avatar(
     user: CurrentActiveUser,
     db: CurrentSession,
     user_service: UserServiceDep,
-    file: UploadFile = File(...),
+    file: SafeUploadFile,
 ):
     if not user.id == uid:
         raise HTTPException(

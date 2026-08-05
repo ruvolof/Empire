@@ -52,8 +52,8 @@ class Stager:
 
         try:
             shellcode = generate_pic_shellcode(self.mainMenu, listener_name, language)
-        except Exception as e:
-            log.error(f"[!] Shellcode generation failed: {e}")
+        except Exception:
+            log.exception("[!] Shellcode generation failed")
             return ""
 
         return shellcode

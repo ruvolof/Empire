@@ -2,7 +2,7 @@ module EmpirGo
 
 go 1.23.0
 
-toolchain go1.23.10
+toolchain go1.23.1
 
 require (
 	github.com/Ne0nd0g/go-clr v1.0.3

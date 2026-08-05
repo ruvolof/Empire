@@ -47,9 +47,6 @@ class CredentialUpdateRequest(BaseModel):
     username: str
     password: str
     host: str
-    os: str
-    sid: str
-    notes: str
     os: str | None = None
     sid: str | None = None
     notes: str | None = None

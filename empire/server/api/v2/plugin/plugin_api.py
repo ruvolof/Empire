@@ -5,7 +5,7 @@ from starlette.responses import Response
 
 from empire.server.api.api_router import APIRouter
 from empire.server.api.jwt_auth import (
-    CurrentUser,
+    CurrentActiveUser,
     get_current_active_user,
 )
 from empire.server.api.v2.plugin.plugin_dto import (
@@ -91,7 +91,7 @@ def execute_plugin(
     plugin_id: str,
     plugin_req: PluginExecutePostRequest,
     db: CurrentSession,
-    current_user: CurrentUser,
+    current_user: CurrentActiveUser,
     plugin: LoadedPluginDep,
     plugin_service: PluginServiceDep,
 ):

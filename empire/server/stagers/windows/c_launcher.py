@@ -134,7 +134,7 @@ class Stager:
             try:
                 subprocess.run(args, capture_output=True, text=True, check=True)
             except subprocess.CalledProcessError as e:
-                log.error(f"[!] Compilation failed: {e.stderr}")
+                log.exception(f"[!] Compilation failed: {e.stderr}")
                 return ""
 
             if exe_file.exists():

@@ -59,6 +59,25 @@ def test_create_download_appends_number_if_already_exists(client, admin_auth_hea
     assert response.json()["filename"].endswith(").yaml")
 
 
+def test_create_download_blocks_path_traversal(client, admin_auth_header):
+    escaped = Path("/tmp/empire_download_traversal.txt")
+    escaped.unlink(missing_ok=True)
+    response = client.post(
+        "/api/v2/downloads",
+        headers=admin_auth_header,
+        files={
+            "file": (
+                "../../../../../../../../tmp/empire_download_traversal.txt",
+                b"pwned",
+            )
+        },
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert response.json()["detail"] == "Invalid filename."
+    assert not escaped.exists(), "traversal file escaped the downloads directory"
+
+
 def test_get_download(client, admin_auth_header, download):
     response = client.get(f"/api/v2/downloads/{download}", headers=admin_auth_header)
 

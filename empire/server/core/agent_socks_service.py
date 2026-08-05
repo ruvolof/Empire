@@ -3,7 +3,7 @@ import queue
 import time
 import typing
 
-from sqlalchemy import and_
+from sqlalchemy import and_, select
 
 from empire.server.common.helpers import KThread
 from empire.server.common.socks import create_client, start_client
@@ -28,16 +28,14 @@ class AgentSocksService:
 
     def _start_existing_socks(self):
         with SessionLocal.begin() as db:
-            agents = (
-                db.query(models.Agent)
-                .filter(
+            agents = db.scalars(
+                select(models.Agent).where(
                     and_(
-                        models.Agent.socks == True,  # noqa: E712
-                        models.Agent.archived == False,  # noqa: E712
+                        models.Agent.socks.is_(True),
+                        models.Agent.archived.is_(False),
                     )
                 )
-                .all()
-            )
+            ).all()
             for agent in agents:
                 self.start_socks_client(agent)
 
@@ -60,7 +58,7 @@ class AgentSocksService:
                 self._socksthreads[session_id].start()
                 log.info(f'SOCKS client for "{agent.name}" successfully started')
             except Exception:
-                log.error(f'SOCKS client for "{agent.name}" failed to start')
+                log.exception(f'SOCKS client for "{agent.name}" failed to start')
         else:
             log.info("SOCKS server already exists")
 

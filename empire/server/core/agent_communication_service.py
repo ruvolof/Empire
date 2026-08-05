@@ -2,14 +2,13 @@ import base64
 import contextlib
 import json
 import logging
-import random
+import secrets
 import string
-import threading
 import typing
 from pathlib import Path
 
 from pydantic import ValidationError
-from sqlalchemy import and_
+from sqlalchemy import and_, delete, select
 from sqlalchemy.orm import Session
 from zlib_wrapper import decompress
 
@@ -17,11 +16,13 @@ from empire.server.api.v2.agent.agent_task_dto import ModulePostRequest
 from empire.server.api.v2.credential.credential_dto import CredentialPostRequest
 from empire.server.common import encryption, helpers, packets
 from empire.server.common.encryption import AESCipher
+from empire.server.core import protocol_constants as proto
 from empire.server.core.config.config_manager import empire_config
 from empire.server.core.db import models
 from empire.server.core.db.base import SessionLocal
 from empire.server.core.db.models import AgentTaskStatus
 from empire.server.core.hooks import hooks
+from empire.server.utils.file_util import is_path_within
 from empire.server.utils.string_util import is_valid_session_id
 
 if typing.TYPE_CHECKING:
@@ -50,7 +51,6 @@ class AgentCommunicationService:
         #                               'functions' : [tab-completable function names for a script-import]
         #                            }
         self.agents = {}
-        self._lock = threading.Lock()
 
         with SessionLocal() as db:
             db_agents = self.agent_service.get_all(db)
@@ -69,7 +69,7 @@ class AgentCommunicationService:
     @staticmethod
     def _is_path_safe(save_path: Path, download_dir: Path, session_id: str) -> bool:
         """Check if a file path is safe (not a directory traversal attack)."""
-        if not save_path.resolve().is_relative_to(download_dir.resolve()):
+        if not is_path_within(save_path, download_dir):
             log.warning(
                 "Agent %s attempted skywalker exploit! Path: %s", session_id, save_path
             )
@@ -114,56 +114,61 @@ class AgentCommunicationService:
         filename = Path(parts[-1]).name
         save_file = save_path / filename
 
-        with self._lock:
-            if not self._is_path_safe(save_file, download_dir, session_id):
-                return
+        if not self._is_path_safe(save_file, download_dir, session_id):
+            return
 
-            if not save_path.exists():
-                save_path.mkdir(parents=True, exist_ok=True)
+        if not save_path.exists():
+            save_path.mkdir(parents=True, exist_ok=True)
 
-            # overwrite an existing file
-            mode = "ab" if append else "wb"
-            f = save_file.open(mode)
+        # overwrite an existing file
+        mode = "ab" if append else "wb"
 
-            if language in ["python", "go"]:
-                data = self._decompress_python_data(data, filename, session_id)
+        if language in ["python", "go"]:
+            data = self._decompress_python_data(data, filename, session_id)
 
+        with save_file.open(mode) as f:
             f.write(data)
-            f.close()
 
-            if not append:
-                location = save_file
-                download = models.Download(
-                    location=str(location),
-                    filename=filename,
-                    size=location.stat().st_size,
-                )
-                db.add(download)
-                db.flush()
-                tasking.downloads.append(download)
+        if not append:
+            location = save_file
+            download = models.Download(
+                location=str(location),
+                filename=filename,
+                size=location.stat().st_size,
+            )
+            db.add(download)
+            db.flush()
+            tasking.downloads.append(download)
 
-                # We join a Download to a Tasking
-                # But we also join a Download to a AgentFile
-                # This could be useful later on for showing files as downloaded directly in the file browser.
-                agent_file = (
-                    db.query(models.AgentFile)
-                    .filter(
-                        and_(
-                            models.AgentFile.path == path,
-                            models.AgentFile.session_id == session_id,
-                        )
+            # We join a Download to a Tasking
+            # But we also join a Download to a AgentFile
+            # This could be useful later on for showing files as downloaded directly in the file browser.
+            agent_file = db.scalars(
+                select(models.AgentFile).where(
+                    and_(
+                        models.AgentFile.path == path,
+                        models.AgentFile.session_id == session_id,
                     )
-                    .first()
                 )
+            ).first()
 
-                if agent_file:
-                    agent_file.downloads.append(download)
-                    db.flush()
+            if agent_file:
+                agent_file.downloads.append(download)
+                db.flush()
 
-        percent = round(
-            save_file.stat().st_size / int(total_filesize) * 100,
-            2,
-        )
+        try:
+            bytes_written = save_file.stat().st_size
+            percent = round(bytes_written / int(total_filesize) * 100, 2)
+        except (ZeroDivisionError, ValueError, OSError):
+            percent = 0.0
+            log.warning(
+                "Agent %s task %s: cannot compute download progress for %s "
+                "(total_filesize=%r); reporting 0.0%%",
+                session_id,
+                tasking.id,
+                filename,
+                total_filesize,
+            )
 
         message = f"Part of file {filename} from {session_id} saved [{percent}%] to {save_path}"
         log.info(message)
@@ -184,16 +189,15 @@ class AgentCommunicationService:
         if "python" in language:
             data = self._decompress_python_data(data, filename, session_id)
 
-        with self._lock:
-            if not self._is_path_safe(save_file, download_dir, session_id):
-                return None
+        if not self._is_path_safe(save_file, download_dir, session_id):
+            return None
 
-            save_path.mkdir(parents=True, exist_ok=True)
+        save_path.mkdir(parents=True, exist_ok=True)
 
-            # save the file out
+        # save the file out
 
-            with save_file.open("wb") as f:
-                f.write(data)
+        with save_file.open("wb") as f:
+            f.write(data)
 
         # notify everyone that the file was downloaded
         message = f"File {path} from {session_id} saved"
@@ -209,9 +213,9 @@ class AgentCommunicationService:
         """
         self.agents.pop(session_id, None)
 
-        agent = (
-            db.query(models.Agent).filter(models.Agent.session_id == session_id).first()
-        )
+        agent = db.scalars(
+            select(models.Agent).where(models.Agent.session_id == session_id)
+        ).first()
         if agent:
             db.delete(agent)
 
@@ -236,23 +240,23 @@ class AgentCommunicationService:
             # If there are any linked downloads, the association will be removed.
             # This function could be updated in the future to do updates instead
             # of clearing the whole tree on refreshes.
-            this_directory = (
-                db.query(models.AgentFile)
-                .filter(
+            this_directory = db.scalars(
+                select(models.AgentFile).where(
                     and_(
                         models.AgentFile.session_id == session_id,
                         models.AgentFile.path == response["directory_path"],
                     ),
                 )
-                .first()
-            )
+            ).first()
             if this_directory:
-                db.query(models.AgentFile).filter(
-                    and_(
-                        models.AgentFile.session_id == session_id,
-                        models.AgentFile.parent_id == this_directory.id,
+                db.execute(
+                    delete(models.AgentFile).where(
+                        and_(
+                            models.AgentFile.session_id == session_id,
+                            models.AgentFile.parent_id == this_directory.id,
+                        )
                     )
-                ).delete()
+                )
             else:  # if the directory doesn't exist we have to create one
                 # parent is None for now even though it might have one. This is self correcting.
                 # If it's true parent is scraped, then this entry will get rewritten
@@ -267,12 +271,14 @@ class AgentCommunicationService:
                 db.flush()
 
             for item in response["items"]:
-                db.query(models.AgentFile).filter(
-                    and_(
-                        models.AgentFile.session_id == session_id,
-                        models.AgentFile.path == item["path"],
+                db.execute(
+                    delete(models.AgentFile).where(
+                        and_(
+                            models.AgentFile.session_id == session_id,
+                            models.AgentFile.path == item["path"],
+                        )
                     )
-                ).delete()
+                )
                 db.add(
                     models.AgentFile(
                         name=item["name"],
@@ -304,35 +310,31 @@ class AgentCommunicationService:
         """
         Update an agent's system information.
         """
-        agent = (
-            db.query(models.Agent).filter(models.Agent.session_id == session_id).first()
-        )
+        agent = db.scalars(
+            select(models.Agent).where(models.Agent.session_id == session_id)
+        ).first()
 
-        host = (
-            db.query(models.Host)
-            .filter(
+        host = db.scalars(
+            select(models.Host).where(
                 and_(
                     models.Host.name == hostname,
                     models.Host.internal_ip == internal_ip,
                 )
             )
-            .first()
-        )
+        ).first()
         if not host:
             host = models.Host(name=hostname, internal_ip=internal_ip)
             db.add(host)
             db.flush()
 
-        process = (
-            db.query(models.HostProcess)
-            .filter(
+        process = db.scalars(
+            select(models.HostProcess).where(
                 and_(
                     models.HostProcess.host_id == host.id,
                     models.HostProcess.process_id == process_id,
                 )
             )
-            .first()
-        )
+        ).first()
         if not process:
             process = models.HostProcess(
                 host_id=host.id,
@@ -377,11 +379,11 @@ class AgentCommunicationService:
 
             for task in tasks:
                 task.status = AgentTaskStatus.pulled
-
-            return tasks
         except AttributeError:
             log.debug("Agent checkin during initialization.")
             return []
+        else:
+            return tasks
 
     def _get_queued_agent_temporary_tasks(self, session_id):
         """
@@ -442,12 +444,12 @@ class AgentCommunicationService:
             except Exception:
                 # if we have an error during decryption
                 message = f"HMAC verification failed from '{session_id}'"
-                log.error(message, exc_info=True)
+                log.exception(message)
                 return "ERROR: HMAC verification failed"
 
             if language.lower() == "powershell":
                 # Expect: client DH pub (exact 768 bytes, big-endian) || agent_cert (64 bytes)
-                if len(message) < 832:  # noqa: PLR2004
+                if len(message) < proto.STAGE0_MIN_BYTES:
                     log.error(f"Invalid {lang_name} stage0 length from {session_id}")
                     return f"ERROR: Invalid {lang_name} stage0"
 
@@ -464,7 +466,7 @@ class AgentCommunicationService:
                     return f"ERROR: Invalid {lang_name} DH public key"
 
                 # Only verify the agent cert if its actually present (not all zeros)
-                if any(agent_cert) and len(agent_cert) == 64:  # noqa: PLR2004
+                if any(agent_cert) and len(agent_cert) == proto.AGENT_CERT_SIZE:
                     try:
                         if not encryption.checkvalid(
                             agent_cert, b"SIGNATURE", agent_cert_public_key
@@ -528,7 +530,7 @@ class AgentCommunicationService:
             if language.lower() == "csharp":
                 # check that we recieved a valid certificate size. Message less then 832 can not contain a valid cert
                 # 832 comes from public key size + agent cert
-                if len(message) < 832:  # noqa: PLR2004
+                if len(message) < proto.STAGE0_MIN_BYTES:
                     log.error(f"Invalid {lang_name} stage0 length from {session_id}")
                     return f"ERROR: Invalid {lang_name} stage0"
 
@@ -545,7 +547,7 @@ class AgentCommunicationService:
                     return f"ERROR: Invalid {lang_name} DH public key"
 
                 # Only verify the agent cert if its actually present (not all zeros)
-                if any(agent_cert) and len(agent_cert) == 64:  # noqa: PLR2004
+                if any(agent_cert) and len(agent_cert) == proto.AGENT_CERT_SIZE:
                     try:
                         if not encryption.checkvalid(
                             agent_cert, b"SIGNATURE", agent_cert_public_key
@@ -601,7 +603,9 @@ class AgentCommunicationService:
                 )
 
             if language.lower() == "python":
-                if (len(message) < 830) or (len(message) > 2500):  # noqa: PLR2004
+                if (len(message) < proto.STAGE0_PYTHON_GO_MIN_BYTES) or (
+                    len(message) > proto.STAGE0_PYTHON_GO_MAX_BYTES
+                ):
                     return (
                         f"Error: Invalid {lang_name} key post format from {session_id}"
                     )
@@ -611,7 +615,7 @@ class AgentCommunicationService:
                     int(int.from_bytes(message[:768], byteorder="big", signed=False))
                 except Exception:
                     message = f"Invalid {lang_name} key post format from {session_id}"
-                    log.error(message)
+                    log.exception(message)
                     return message
 
                 # Need to split message of form:
@@ -679,7 +683,9 @@ class AgentCommunicationService:
 
             if language.lower() == "go":
                 # check that message has a valid block size
-                if (len(str(message)) < 830) or (len(str(message)) > 2500):  # noqa: PLR2004
+                if (len(str(message)) < proto.STAGE0_PYTHON_GO_MIN_BYTES) or (
+                    len(str(message)) > proto.STAGE0_PYTHON_GO_MAX_BYTES
+                ):
                     message = f"Invalid {lang_name} key post format from {session_id}"
                     log.error(message)
                     return (
@@ -691,7 +697,7 @@ class AgentCommunicationService:
                     int(int.from_bytes(message[:768], byteorder="big", signed=False))
                 except Exception:
                     message = f"Invalid {lang_name} key post format from {session_id}"
-                    log.error(message)
+                    log.exception(message)
                     return message
 
                 # Need to split message of form:
@@ -771,7 +777,7 @@ class AgentCommunicationService:
                 message = AESCipher.decrypt_and_verify(session_key, enc_data)
                 parts = message.split(b"|")
 
-                if len(parts) < 12:  # noqa: PLR2004
+                if len(parts) < proto.SYSINFO_MIN_PARTS:
                     message = f"Agent {session_id} posted invalid sysinfo checkin format: {message}"
                     log.warning(message)
                     # remove the agent from the cache/database
@@ -807,7 +813,7 @@ class AgentCommunicationService:
                 message = (
                     f"Exception in agents.handle_agent_staging() for {session_id} : {e}"
                 )
-                log.error(message, exc_info=True)
+                log.exception(message)
                 self._remove_agent(db, session_id)
                 return f"Error: Exception in agents.handle_agent_staging() for {session_id} : {e}"
 
@@ -872,7 +878,7 @@ class AgentCommunicationService:
         Abstracted out sufficiently for any listener module to use.
         """
 
-        if len(routing_packet) < 20:  # noqa: PLR2004
+        if len(routing_packet) < proto.ROUTING_PACKET_MIN_BYTES:
             message = f"handle_agent_data(): routingPacket wrong length: {len(routing_packet)}"
             log.error(message)
             return None
@@ -976,8 +982,15 @@ class AgentCommunicationService:
             self.agent_service.update_agent_lastseen(db, session_id)
 
             # Check if the agent has returned sysinfo yet, so that we don't
-            # send out a checkin before stage2 of registration is complete
-            if self.agent_service.get_by_id(db, session_id).hostname:
+            # send out a checkin before stage2 of registration is complete.
+            # Scalar select avoids loading the full Agent row just for a
+            # truthiness check on a single column.
+            hostname = db.scalar(
+                select(models.Agent.hostname).where(
+                    models.Agent.session_id == session_id
+                )
+            )
+            if hostname:
                 fire_callback_hook = True
 
             tasks = self._get_queued_agent_tasks(db, session_id)
@@ -1056,44 +1069,43 @@ class AgentCommunicationService:
 
             # process the packet and extract necessary data
             responsePackets = packets.parse_result_packets(packet)
-            results = False
-            # process each result packet
-            for (
-                responseName,
-                _totalPacket,
-                _packetNum,
-                taskID,
-                _length,
-                data,
-            ) in responsePackets:
-                # process the agent's response
-                with SessionLocal.begin() as db:
-                    if update_lastseen:
-                        self.agent_service.update_agent_lastseen(db, session_id)
+            # One session/transaction per agent callback regardless of N packets.
+            taskings_to_hook = []
+            with SessionLocal.begin() as db:
+                if update_lastseen:
+                    self.agent_service.update_agent_lastseen(db, session_id)
 
+                for (
+                    responseName,
+                    _totalPacket,
+                    _packetNum,
+                    taskID,
+                    _length,
+                    data,
+                ) in responsePackets:
                     tasking = self._process_agent_packet(
                         db, session_id, responseName, taskID, data
                     )
                     db.flush()
                     if tasking is not None:
                         db.expunge(tasking)
+                        taskings_to_hook.append(tasking)
 
-                # Fire AFTER_TASKING_RESULT_HOOK outside the session block
-                if tasking is not None:
-                    hooks.run_hooks(hooks.AFTER_TASKING_RESULT_HOOK, None, tasking)
-                results = True
+            results = bool(responsePackets)
+            for tasking in taskings_to_hook:
+                hooks.run_hooks(hooks.AFTER_TASKING_RESULT_HOOK, None, tasking)
             if results:
                 # signal that this agent returned results
                 message = f"Agent {session_id} returned results."
                 log.info(message)
 
-            # return a 200/valid
-            return "VALID"
-
         except Exception as e:
             message = f"Error processing result packet from {session_id} : {e}"
-            log.error(message, exc_info=True)
+            log.exception(message)
             return None
+        else:
+            # return a 200/valid
+            return "VALID"
 
     def _process_agent_packet(  # noqa: PLR0912 PLR0915
         self, db: Session, session_id, response_name, task_id, data
@@ -1103,24 +1115,23 @@ class AgentCommunicationService:
         """
         key_log_task_id = None
 
-        agent = (
-            db.query(models.Agent).filter(models.Agent.session_id == session_id).first()
-        )
+        # PK lookup; cheaper than .filter(...).first() (no WHERE planning)
+        # and benefits from SQLAlchemy's identity map if the row is
+        # already loaded in the session.
+        agent = db.get(models.Agent, session_id)
 
         # report the agent result in the reporting database
         message = f"Agent {session_id} got results for task {task_id}"
         log.info(message)
 
-        tasking = (
-            db.query(models.AgentTask)
-            .filter(
+        tasking = db.scalars(
+            select(models.AgentTask).where(
                 and_(
                     models.AgentTask.id == task_id,
                     models.AgentTask.agent_id == session_id,
                 )
             )
-            .first()
-        )
+        ).first()
 
         # insert task results into the database, if it's not a file
         if (
@@ -1215,7 +1226,7 @@ class AgentCommunicationService:
             # sys info response -> update the host info
             data = data.decode("utf-8")
             parts = data.split("|")
-            if len(parts) < 12:  # noqa: PLR2004
+            if len(parts) < proto.SYSINFO_MIN_PARTS:
                 message = f"Invalid sysinfo response from {session_id}"
                 log.error(message)
             else:
@@ -1310,7 +1321,7 @@ class AgentCommunicationService:
                 data = data.decode("UTF-8")
 
             parts = data.split("|")
-            if len(parts) != 4:  # noqa: PLR2004
+            if len(parts) != proto.DOWNLOAD_RESPONSE_PARTS:
                 message = f"Received invalid file download response from {session_id}"
                 log.error(message)
             else:
@@ -1510,7 +1521,7 @@ class AgentCommunicationService:
             if isinstance(data, str):
                 data = data.encode("UTF-8")
             parts = data.split(b"\n")
-            if len(parts) > 10:  # noqa: PLR2004
+            if len(parts) > proto.MIMIKATZ_OUTPUT_MIN_LINES:
                 date_time = helpers.get_datetime()
                 if parts[0].startswith(b"Hostname:"):
                     # if we get Invoke-Mimikatz output, try to parse it and add
@@ -1569,9 +1580,9 @@ class AgentCommunicationService:
         return tasking
 
     def autorun_tasks(self, db: Session, session_id):
-        agent = (
-            db.query(models.Agent).filter(models.Agent.session_id == session_id).first()
-        )
+        agent = db.scalars(
+            select(models.Agent).where(models.Agent.session_id == session_id)
+        ).first()
 
         listener = self.listener_service.get_by_name(db, agent.listener)
 
@@ -1582,10 +1593,10 @@ class AgentCommunicationService:
                     self.agent_task_service.create_task_module(
                         db, agent, module_request
                     )
-                except ValidationError as e:
-                    log.error(f"Error parsing module request: {e}")
+                except ValidationError:
+                    log.exception("Error parsing module request")
 
     def generate_sessionid(self):
         return "".join(
-            random.choice(string.ascii_uppercase + string.digits) for _ in range(8)
+            secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8)
         )

@@ -17,7 +17,7 @@ class TemplateEngine:
                templates. For other ways to search for and load templates
                see http://jinja.pocoo.org/docs/2.10/api/#loaders
         """
-        env = jinja2.Environment(
+        env = jinja2.Environment(  # noqa: S701 - renders attack payloads/scripts, not HTML; autoescaping would corrupt output
             loader=jinja2.FileSystemLoader(path),
             comment_start_string='"""',
             comment_end_string='"""',

@@ -6,12 +6,14 @@ import sys
 import tarfile
 import tempfile
 import typing
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import requests
 import yaml
 from pydantic import BaseModel
-from requests_file import FileAdapter
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.status import HTTP_200_OK
 
@@ -37,9 +39,6 @@ if typing.TYPE_CHECKING:
     from empire.server.common.empire import MainMenu
 
 log = logging.getLogger(__name__)
-
-s = requests.Session()
-s.mount("file://", FileAdapter())
 
 
 class PluginHolder(BaseModel):
@@ -119,8 +118,8 @@ class PluginService:
         for plugin_dir in self._list_plugin_directories():
             try:
                 plugin_config = self._validate_plugin(plugin_dir)
-            except PluginValidationException as e:
-                log.error(f"Failed to load plugin {plugin_dir.name}: {e}")
+            except PluginValidationException:
+                log.exception(f"Failed to load plugin {plugin_dir.name}")
                 continue
 
             self.load_plugin(db, plugin_dir, plugin_config)
@@ -191,17 +190,39 @@ class PluginService:
         self.load_plugin(db, plugin_dir, plugin_config, version_name)
 
     def _download_tar(self, tar_url):
-        """Download and extract a tar archive. Returns the temp directory."""
+        """Download and extract a tar archive. Returns the temp directory.
+
+        Supports ``file://`` URIs (for local-path plugin installs) directly via
+        the stdlib instead of mounting a third-party ``requests`` adapter.
+        """
         temp_dir = (
             Path(tempfile.gettempdir()) / Path(tar_url.rsplit("/", maxsplit=1)[-1]).stem
         )
-        response = s.get(tar_url, stream=True)
+        parsed = urllib.parse.urlparse(tar_url)
+        if parsed.scheme == "file":
+            try:
+                with (
+                    Path(urllib.request.url2pathname(parsed.path)).open(
+                        "rb"
+                    ) as fileobj,
+                    tarfile.open(fileobj=fileobj, mode="r|*") as tar,
+                ):
+                    # filter="data" guards against path traversal in the plugin archive.
+                    tar.extractall(path=temp_dir, filter="data")
+            except OSError as e:
+                raise PluginValidationException(
+                    f"Failed to download plugin: {e}"
+                ) from e
+            return temp_dir
+
+        response = requests.get(tar_url, stream=True, timeout=30)
         if response.status_code != HTTP_200_OK:
             raise PluginValidationException(
                 f"Failed to download plugin: {response.text}"
             )
         with tarfile.open(fileobj=response.raw, mode="r|*") as tar:
-            tar.extractall(path=temp_dir)
+            # filter="data" guards against path traversal in the plugin archive.
+            tar.extractall(path=temp_dir, filter="data")
         return temp_dir
 
     def install_plugin_from_git(  # noqa: PLR0913
@@ -273,15 +294,16 @@ class PluginService:
 
         try:
             res = plugin.execute(cleaned_options, db=db, user=user)
+        except (PluginValidationException, PluginExecutionException):
+            raise
+        except Exception as e:
+            log.exception(f"Plugin {plugin.info.name} failed to run")
+            return False, str(e)
+        else:
             # Tuple is deprecated. Will be removed in 7.x
             if isinstance(res, tuple):
                 return res
             return res, None
-        except (PluginValidationException, PluginExecutionException) as e:
-            raise e
-        except Exception as e:
-            log.error(f"Plugin {plugin.info.name} failed to run: {e}", exc_info=True)
-            return False, str(e)
 
     def plugin_socketio_message(self, plugin_name, msg):
         """
@@ -312,7 +334,7 @@ class PluginService:
 
     def get_all(self, db):
         loaded_plugins = self.loaded_plugins
-        db_plugins = db.query(models.Plugin).all()
+        db_plugins = db.scalars(select(models.Plugin)).all()
 
         ret = []
         for db_plugin in db_plugins:
@@ -323,7 +345,9 @@ class PluginService:
 
     def get_by_id(self, db: SessionLocal, uid: str) -> PluginHolder | None:
         loaded_plugin = self.loaded_plugins.get(uid)
-        db_plugin = db.query(models.Plugin).filter(models.Plugin.id == uid).first()
+        db_plugin = db.scalars(
+            select(models.Plugin).where(models.Plugin.id == uid)
+        ).first()
 
         if not db_plugin:
             return None

@@ -14,7 +14,7 @@ For example: `EMPIRE_DATABASE__USE='mysql'` will override the `database.use` set
 
 Empire uses [Alembic](https://alembic.sqlalchemy.org/) for database schema migrations. This allows schema changes to be applied incrementally without requiring a full database reset.
 
-On startup, `startup_db()` stamps the database at the current Alembic head revision. When future updates include schema changes, migrations can be applied via the `migrate_db()` function without data loss.
+On startup, `startup_db()` stamps databases not yet tracked by Alembic at the baseline revision (`0001`), not head. When future updates include schema changes, migrations bring the database up to head via the `migrate_db()` function without data loss.
 
 ### Creating a new migration
 
@@ -25,6 +25,14 @@ poetry run alembic revision --autogenerate -m "describe the change"
 ```
 
 Review the generated file in `empire/server/core/db/alembic/versions/` to ensure the `upgrade()` and `downgrade()` functions are correct, then commit it with your model changes.
+
+To apply pending migrations on existing databases, run the following from the Empire root directory:
+
+```bash
+poetry run alembic -c alembic.ini upgrade head
+```
+
+Empire stamps fresh databases at baseline automatically on startup but does NOT auto-apply migrations. Run the command above after upgrading Empire to a release that includes new migrations.
 
 ### Backing up before migrations
 

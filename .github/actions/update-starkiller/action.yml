@@ -22,11 +22,11 @@ runs:
       if: ${{ inputs.repo }}
       shell: bash
       run: |
-        sed -i "s|repo:.*|repo: ${{ inputs.repo }}|" empire/server/config.yaml
+        yq -i '.starkiller.repo = "${{ inputs.repo }}"' empire/server/config.yaml
     - name: Update config.yaml ref
       shell: bash
       run: |
-        sed -i '0,/ref: .*/s//ref: ${{ inputs.starkiller-version }}/' empire/server/config.yaml
+        yq -i '.starkiller.ref = "${{ inputs.starkiller-version }}"' empire/server/config.yaml
     - name: Update changelog
       shell: bash
       run: |

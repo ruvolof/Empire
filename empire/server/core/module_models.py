@@ -16,6 +16,12 @@ class EmpireModuleAdvanced(BaseModel):
     option_format_string: str = '-{{ KEY }} "{{ VALUE }}"'
     option_format_string_boolean: str = "-{{ KEY }}"
     custom_generate: bool = False
+    # Path to the .py file containing the custom generate `Module` class.
+    # The class is imported + instantiated lazily on first execute via
+    # ModuleService._load_custom_generate_class — eager-loading every
+    # custom_generate module at boot was costing cold-start time on
+    # each MainMenu init / xdist worker boot.
+    custom_generate_path: str | None = None
     generate_class: Any = None
 
 

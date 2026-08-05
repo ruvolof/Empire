@@ -46,6 +46,29 @@ def _get_alembic_version(session):
     return row[0] if row else None
 
 
+def _head_revision() -> str:
+    """Thin wrapper around the prod helper so test and prod behavior stay in sync."""
+    from empire.server.core.db.base import _get_head_revision
+
+    return _get_head_revision()
+
+
+@pytest.fixture
+def _restore_db_to_baseline_after():
+    """Reset alembic_version to the startup resting state (baseline 0001)
+    after a test mutates it, so version state doesn't leak across the
+    session-scoped DB. The physical schema is always at head via create_all;
+    only the version row is reset, matching startup_db()'s stamp-only
+    behavior (it never auto-migrates to head).
+    """
+    yield
+    from empire.server.core.db.base import SessionLocal, _stamp_alembic_baseline
+
+    with SessionLocal.begin() as session:
+        session.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    _stamp_alembic_baseline()
+
+
 def _is_expected_diff(diff_item):
     """Filter out diffs from MySQL-specific columns/indexes managed by startup_db().
 
@@ -104,14 +127,15 @@ def test_alembic_version_table_exists(client):
         assert _get_alembic_version(session) == "0001"
 
 
+@pytest.mark.usefixtures("_restore_db_to_baseline_after")
 def test_migrate_db_noop(client):
-    """migrate_db() completes without error on an up-to-date database."""
+    """migrate_db() completes without error and leaves the DB at head."""
     from empire.server.core.db.base import SessionLocal, migrate_db
 
     migrate_db()
 
     with SessionLocal() as session:
-        assert _get_alembic_version(session) == "0001"
+        assert _get_alembic_version(session) == _head_revision()
 
 
 def test_stamp_idempotent(client):
@@ -163,8 +187,9 @@ def test_backup_db_sqlite(client):
     result.unlink(missing_ok=True)
 
 
+@pytest.mark.usefixtures("_restore_db_to_baseline_after")
 def test_backup_then_migrate_sqlite(client):
-    """Full backup-then-migrate workflow: backup succeeds, migrate is a no-op, DB intact."""
+    """Full backup-then-migrate workflow: backup succeeds, migrate reaches head, DB intact."""
     from empire.server.core.db.base import SessionLocal, backup_db, migrate_db
     from empire.server.core.db.models import get_database_config
 
@@ -185,7 +210,7 @@ def test_backup_then_migrate_sqlite(client):
     with SessionLocal() as session:
         user_count_after = session.execute(text("SELECT count(*) FROM users")).scalar()
         assert user_count_after == user_count_before
-        assert _get_alembic_version(session) == "0001"
+        assert _get_alembic_version(session) == _head_revision()
 
     backup_path.unlink(missing_ok=True)
 
@@ -237,6 +262,7 @@ def test_stamp_on_pre_alembic_db(client):
         assert _get_alembic_version(session) == "0001"
 
 
+@pytest.mark.usefixtures("_restore_db_to_baseline_after")
 def test_migrate_on_pre_alembic_db(client):
     """Simulate upgrading a pre-Alembic DB: drop version table, then migrate_db()."""
     from empire.server.core.db.base import (
@@ -249,12 +275,12 @@ def test_migrate_on_pre_alembic_db(client):
     with SessionLocal.begin() as session:
         session.execute(text("DROP TABLE IF EXISTS alembic_version"))
 
-    # Stamp baseline first (as startup_db would), then migrate
+    # Stamp baseline first (as startup_db would), then migrate to head
     _stamp_alembic_baseline()
     migrate_db()
 
     with SessionLocal() as session:
-        assert _get_alembic_version(session) == "0001"
+        assert _get_alembic_version(session) == _head_revision()
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +288,7 @@ def test_migrate_on_pre_alembic_db(client):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_restore_db_to_baseline_after")
 def test_real_migration_add_and_remove_column(client):
     """Create a real migration that adds a column, apply it, verify, then downgrade."""
     from alembic import command
@@ -271,14 +298,19 @@ def test_real_migration_add_and_remove_column(client):
     cfg = _alembic_cfg()
     versions_dir = Path(cfg.get_main_option("script_location")) / "versions"
 
+    # Chain the throwaway fixture off the real head with a unique revision id
+    # so it never collides with the shipped 0002 migration.
+    head = _head_revision()
+    test_rev = "0002_test_add_column"
+
     # Write a migration file that adds a test column to the 'users' table
     migration_file = versions_dir / "0002_test_add_column.py"
     migration_file.write_text(
         textwrap.dedent("""\
         \"\"\"test add column
 
-        Revision ID: 0002
-        Revises: 0001
+        Revision ID: {rev}
+        Revises: {down}
         Create Date: 2026-03-25
         \"\"\"
         from collections.abc import Sequence
@@ -286,8 +318,8 @@ def test_real_migration_add_and_remove_column(client):
         import sqlalchemy as sa
         from alembic import op
 
-        revision: str = "0002"
-        down_revision: str | None = "0001"
+        revision: str = "{rev}"
+        down_revision: str | None = "{down}"
         branch_labels: str | Sequence[str] | None = None
         depends_on: str | Sequence[str] | None = None
 
@@ -298,7 +330,7 @@ def test_real_migration_add_and_remove_column(client):
 
         def downgrade() -> None:
             op.drop_column("users", "_alembic_test")
-        """)
+        """).format(rev=test_rev, down=head)
     )
 
     try:
@@ -310,23 +342,24 @@ def test_real_migration_add_and_remove_column(client):
             insp = inspect(session.bind)
             columns = [c["name"] for c in insp.get_columns("users")]
             assert "_alembic_test" in columns
-            assert _get_alembic_version(session) == "0002"
+            assert _get_alembic_version(session) == test_rev
 
-        # Downgrade back to baseline
-        command.downgrade(cfg, "0001")
+        # Downgrade back to the shipped head
+        command.downgrade(cfg, head)
 
         # Verify the column was removed
         with SessionLocal() as session:
             insp = inspect(session.bind)
             columns = [c["name"] for c in insp.get_columns("users")]
             assert "_alembic_test" not in columns
-            assert _get_alembic_version(session) == "0001"
+            assert _get_alembic_version(session) == head
 
     finally:
         # Clean up the test migration file
         _cleanup_test_migration(migration_file)
 
 
+@pytest.mark.usefixtures("_restore_db_to_baseline_after")
 def test_migrate_db_applies_pending_migration(client):
     """migrate_db() picks up and applies a new migration file."""
     from empire.server.core.db.base import SessionLocal, _alembic_cfg, migrate_db
@@ -334,13 +367,17 @@ def test_migrate_db_applies_pending_migration(client):
     cfg = _alembic_cfg()
     versions_dir = Path(cfg.get_main_option("script_location")) / "versions"
 
+    # Chain off the real head with a unique revision id (no collision with 0002).
+    head = _head_revision()
+    test_rev = "0002_test_pending"
+
     migration_file = versions_dir / "0002_test_pending.py"
     migration_file.write_text(
         textwrap.dedent("""\
         \"\"\"test pending migration
 
-        Revision ID: 0002
-        Revises: 0001
+        Revision ID: {rev}
+        Revises: {down}
         Create Date: 2026-03-25
         \"\"\"
         from collections.abc import Sequence
@@ -348,8 +385,8 @@ def test_migrate_db_applies_pending_migration(client):
         import sqlalchemy as sa
         from alembic import op
 
-        revision: str = "0002"
-        down_revision: str | None = "0001"
+        revision: str = "{rev}"
+        down_revision: str | None = "{down}"
         branch_labels: str | Sequence[str] | None = None
         depends_on: str | Sequence[str] | None = None
 
@@ -360,7 +397,7 @@ def test_migrate_db_applies_pending_migration(client):
 
         def downgrade() -> None:
             op.drop_column("users", "_alembic_pending_test")
-        """)
+        """).format(rev=test_rev, down=head)
     )
 
     try:
@@ -371,12 +408,12 @@ def test_migrate_db_applies_pending_migration(client):
             insp = inspect(session.bind)
             columns = [c["name"] for c in insp.get_columns("users")]
             assert "_alembic_pending_test" in columns
-            assert _get_alembic_version(session) == "0002"
+            assert _get_alembic_version(session) == test_rev
 
-        # Clean up: downgrade
+        # Clean up: downgrade back to the shipped head
         from alembic import command
 
-        command.downgrade(cfg, "0001")
+        command.downgrade(cfg, head)
 
         with SessionLocal() as session:
             insp = inspect(session.bind)
@@ -387,28 +424,35 @@ def test_migrate_db_applies_pending_migration(client):
         _cleanup_test_migration(migration_file)
 
 
+@pytest.mark.usefixtures("_restore_db_to_baseline_after")
 def test_failed_migration_does_not_corrupt_version(client):
-    """A migration that raises an error should not advance the version."""
+    """A migration that raises an error should not advance the version past the last good revision."""
     from empire.server.core.db.base import SessionLocal, _alembic_cfg, migrate_db
 
     cfg = _alembic_cfg()
     versions_dir = Path(cfg.get_main_option("script_location")) / "versions"
+
+    # Chain the broken fixture off the real head with a unique revision id.
+    # The shipped head applies cleanly first; the broken fixture then fails,
+    # so the version must remain at the last good revision (the real head).
+    head = _head_revision()
+    test_rev = "0002_test_broken"
 
     migration_file = versions_dir / "0002_test_broken.py"
     migration_file.write_text(
         textwrap.dedent("""\
         \"\"\"broken migration
 
-        Revision ID: 0002
-        Revises: 0001
+        Revision ID: {rev}
+        Revises: {down}
         Create Date: 2026-03-25
         \"\"\"
         from collections.abc import Sequence
 
         from alembic import op
 
-        revision: str = "0002"
-        down_revision: str | None = "0001"
+        revision: str = "{rev}"
+        down_revision: str | None = "{down}"
         branch_labels: str | Sequence[str] | None = None
         depends_on: str | Sequence[str] | None = None
 
@@ -420,16 +464,17 @@ def test_failed_migration_does_not_corrupt_version(client):
 
         def downgrade() -> None:
             pass
-        """)
+        """).format(rev=test_rev, down=head)
     )
 
     try:
         with pytest.raises(Exception, match="this_table_does_not_exist_at_all"):
             migrate_db()
 
-        # Version should still be at 0001
+        # Version should remain at the last good revision (the shipped head),
+        # not advance to the broken fixture.
         with SessionLocal() as session:
-            assert _get_alembic_version(session) == "0001"
+            assert _get_alembic_version(session) == head
 
     finally:
         _cleanup_test_migration(migration_file)
@@ -458,6 +503,7 @@ def test_fresh_db_has_all_tables(tmp_path):
     fresh_engine.dispose()
 
 
+@pytest.mark.usefixtures("_restore_db_to_baseline_after")
 def test_stamp_then_migrate_consistent(client):
     """After stamp + migrate, DB should be at head with all tables intact."""
     from empire.server.core.db.base import (
@@ -474,7 +520,7 @@ def test_stamp_then_migrate_consistent(client):
     migrate_db()
 
     with SessionLocal() as session:
-        assert _get_alembic_version(session) == "0001"
+        assert _get_alembic_version(session) == _head_revision()
 
         # Verify core tables still exist
         insp = inspect(session.bind)
@@ -667,6 +713,65 @@ def test_backup_db_mysql_port_parsing(client, tmp_path, monkeypatch):
     p_idx = captured_cmd.index("-P")
     assert captured_cmd[p_idx + 1] == "3307"
 
+    # A specified port must force TCP, otherwise the MySQL client special-cases
+    # `-h localhost` and falls back to the Unix socket (ignoring `-P`).
+    assert "--protocol=tcp" in captured_cmd
+
     assert any(arg.startswith("--defaults-extra-file=") for arg in captured_cmd)
 
     result.unlink(missing_ok=True)
+
+
+@pytest.mark.usefixtures("_restore_db_to_baseline_after")
+def test_migration_0002_upgrade_downgrade_roundtrip(client):
+    """0002.upgrade() is idempotent against existing indexes; downgrade() drops them; re-upgrade restores."""
+    from alembic import command
+    from sqlalchemy import inspect as sa_inspect
+
+    from empire.server.core.db.base import _alembic_cfg, engine, use
+
+    cfg = _alembic_cfg()
+
+    try:
+        # Ensure we start at head.
+        command.stamp(cfg, "head")
+
+        # 0002.upgrade() against a DB that already has the indexes (via
+        # create_all on fresh installs) must no-op cleanly.
+        command.downgrade(cfg, "0001")
+        insp = sa_inspect(engine)
+
+        # After downgrade, the three freely-droppable indexes should be gone.
+        agent_indexes = {ix["name"] for ix in insp.get_indexes("agents")}
+        user_indexes = {ix["name"] for ix in insp.get_indexes("users")}
+        agent_file_indexes = {ix["name"] for ix in insp.get_indexes("agent_files")}
+        assert "ix_agents_listener_archived" not in agent_indexes
+        assert "ix_users_username" not in user_indexes
+        assert "ix_agent_files_session_id" not in agent_file_indexes
+        # ix_agent_files_parent_id backs the self-referential FK on
+        # agent_files.parent_id. InnoDB requires an index on the FK column, so
+        # downgrade() intentionally leaves it on MySQL; SQLite drops it.
+        if use == "mysql":
+            assert "ix_agent_files_parent_id" in agent_file_indexes
+        else:
+            assert "ix_agent_files_parent_id" not in agent_file_indexes
+
+        # Upgrade again — should restore the indexes.
+        command.upgrade(cfg, "head")
+        insp = sa_inspect(engine)
+        agent_indexes = {ix["name"] for ix in insp.get_indexes("agents")}
+        user_indexes = {ix["name"] for ix in insp.get_indexes("users")}
+        agent_file_indexes = {ix["name"] for ix in insp.get_indexes("agent_files")}
+        assert "ix_agents_listener_archived" in agent_indexes
+        assert "ix_users_username" in user_indexes
+        assert "ix_agent_files_session_id" in agent_file_indexes
+        assert "ix_agent_files_parent_id" in agent_file_indexes
+
+        # Re-upgrade (idempotency check): must not error.
+        command.upgrade(cfg, "head")
+    finally:
+        # Always leave the DB at head + alembic_version row at head so we
+        # don't leak state into the rest of the suite, even if an assertion
+        # above failed mid-roundtrip.
+        command.upgrade(cfg, "head")
+        command.stamp(cfg, "head")

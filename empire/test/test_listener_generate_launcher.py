@@ -173,7 +173,7 @@ def test_http_malleable_generate_launcher(monkeypatch, main_menu_mock):
 
     session_mock = MagicMock()
     profile_mock = MagicMock()
-    session_mock.return_value.query.return_value.filter.return_value.first.return_value = profile_mock
+    session_mock.return_value.scalars.return_value.first.return_value = profile_mock
     profile_mock.data = _fake_malleable_profile()
     monkeypatch.setattr(
         "empire.server.listeners.http_malleable.SessionLocal", session_mock

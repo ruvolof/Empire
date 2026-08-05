@@ -3,7 +3,7 @@ import threading
 import typing
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -36,40 +36,39 @@ class AgentService:
 
     @staticmethod
     def get_for_listener(db: Session, listener_name: str):
-        return (
-            db.query(models.Agent)
-            .filter(
+        return db.scalars(
+            select(models.Agent).where(
                 and_(
                     models.Agent.listener == listener_name,
-                    models.Agent.archived == False,  # noqa: E712
+                    models.Agent.archived.is_(False),
                 )
             )
-            .all()
-        )
+        ).all()
 
     @staticmethod
     def get_all(
         db: Session, include_archived: bool = False, include_stale: bool = True
     ):
-        query = db.query(models.Agent).filter(
-            models.Agent.host_id != ""
-        )  # don't return agents that haven't fully checked in.
+        # don't return agents that haven't fully checked in.
+        stmt = select(models.Agent).where(models.Agent.host_id != "")
 
         if not include_archived:
-            query = query.filter(models.Agent.archived == False)  # noqa: E712
+            stmt = stmt.where(models.Agent.archived.is_(False))
 
         if not include_stale:
-            query = query.filter(models.Agent.stale == False)  # noqa: E712
+            stmt = stmt.where(models.Agent.stale.is_(False))
 
-        return query.all()
+        return db.scalars(stmt).all()
 
     @staticmethod
     def get_by_id(db: Session, uid: str):
-        return db.query(models.Agent).filter(models.Agent.session_id == uid).first()
+        return db.scalars(
+            select(models.Agent).where(models.Agent.session_id == uid)
+        ).first()
 
     @staticmethod
     def get_by_name(db: Session, name: str):
-        return db.query(models.Agent).filter(models.Agent.name == name).first()
+        return db.scalars(select(models.Agent).where(models.Agent.name == name)).first()
 
     def create_agent(  # noqa: PLR0913
         self,
@@ -174,29 +173,29 @@ class AgentService:
         end_date: datetime | None = None,
         order_direction: OrderDirection = OrderDirection.desc,
     ):
-        query = db.query(
+        stmt = select(
             models.AgentCheckIn,
             func.count(models.AgentCheckIn.checkin_time).over().label("total"),
         )
 
         if agents:
-            query = query.filter(models.AgentCheckIn.agent_id.in_(agents))
+            stmt = stmt.where(models.AgentCheckIn.agent_id.in_(agents))
 
         if start_date:
-            query = query.filter(models.AgentCheckIn.checkin_time >= start_date)
+            stmt = stmt.where(models.AgentCheckIn.checkin_time >= start_date)
 
         if end_date:
-            query = query.filter(models.AgentCheckIn.checkin_time <= end_date)
+            stmt = stmt.where(models.AgentCheckIn.checkin_time <= end_date)
 
         if order_direction == OrderDirection.asc:
-            query = query.order_by(models.AgentCheckIn.checkin_time.asc())
+            stmt = stmt.order_by(models.AgentCheckIn.checkin_time.asc())
         else:
-            query = query.order_by(models.AgentCheckIn.checkin_time.desc())
+            stmt = stmt.order_by(models.AgentCheckIn.checkin_time.desc())
 
         if limit > 0:
-            query = query.limit(limit).offset(offset)
+            stmt = stmt.limit(limit).offset(offset)
 
-        results = query.all()
+        results = db.execute(stmt).all()
 
         total = 0 if len(results) == 0 else results[0].total
         results = [x[0] for x in results]
@@ -232,23 +231,23 @@ class AgentService:
 
         time_agg = func.date_format(models.AgentCheckIn.checkin_time, format["sql"])
 
-        query = db.query(
+        stmt = select(
             time_agg.label("time_agg"),
             func.count(models.AgentCheckIn.checkin_time).label("count"),
         )
 
         if agents:
-            query = query.filter(models.AgentCheckIn.agent_id.in_(agents))
+            stmt = stmt.where(models.AgentCheckIn.agent_id.in_(agents))
 
         if start_date:
-            query = query.filter(models.AgentCheckIn.checkin_time >= start_date)
+            stmt = stmt.where(models.AgentCheckIn.checkin_time >= start_date)
 
         if end_date:
-            query = query.filter(models.AgentCheckIn.checkin_time <= end_date)
+            stmt = stmt.where(models.AgentCheckIn.checkin_time <= end_date)
 
-        query = query.group_by("time_agg")
+        stmt = stmt.group_by("time_agg")
 
-        results = query.all()
+        results = db.execute(stmt).all()
         converted_results = []
 
         for result in results:

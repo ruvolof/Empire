@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "empire-bc-security-fork"
-version = "6.6.0"
+version = "6.7.1"
 description = ""
 authors = ["BC Security <info@bc-security.org>"]
 readme = "README.md"
@@ -16,7 +16,6 @@ python = ">=3.13,<3.15"
 urllib3 = "^2.6.3"
 requests = "^2.32.5"
 macholib = "^1.16.4"
-pyOpenSSL = "^25.3.0"
 zlib_wrapper = "^0.1.3"
 jinja2 = "^3.1.6"
 pyparsing = "^3.3.2"
@@ -24,15 +23,13 @@ PyMySQL = "^1.1.2"
 SQLAlchemy = "^2.0.46"
 alembic = "^1.15.0"
 PyYAML = "^6.0.3"
-SQLAlchemy-Utc = "^0.14.0"
-pycryptodome = "^3.23.0"
 cryptography = "^46.0.5"
 fastapi = "^0.129.0"
 uvicorn = "^0.41.0"
 jq = "^1.11.0"
 aiofiles = "^25.1.0"
 python-multipart = "^0.0.22"
-python-jose = {version = "^3.5.0", extras = ["cryptography"]}
+pyjwt = "^2.10.1"
 python-socketio = "^5.16.1"
 Flask = "^3.1.3"
 pysecretsocks = {git = "https://github.com/BC-SECURITY/PySecretSOCKS.git", rev = "da5be0e"}
@@ -46,7 +43,6 @@ pyinstaller = "^6.19.0"
 packaging = "^26.0"
 netaddr = "^1.3.0"
 bcrypt = "^5.0.0"
-requests-file = "^3.0.1"
 pydantic-settings = "^2.13.1"
 prettytable = "^3.17.0"
 
@@ -54,10 +50,8 @@ prettytable = "^3.17.0"
 [tool.poetry.group.dev.dependencies]
 httpx = "^0.28.1" # For starlette TestClient
 pytest = "^9.0.2"
-pytest-timeout = "^2.4.0"
 ruff = "^0.15.2"
 pytest-cov = "^7.0.0"
-coverage = {version = "^7.13.4", extras = ["toml"]}
 pytest-env = "^1.5.0"
 pytest-rerunfailures = "^16.1"
 
@@ -81,7 +75,12 @@ target-version = "py313"
 # Will revisit line lengths later. Black won't format the strings and comments
 # by default. And the experimental flag still has some issues.
 # fixes right now: https://github.com/psf/black/issues/2188
-extend-ignore = ["E501"]
+extend-ignore = [
+    "E501",
+    # TRY002/003: a custom exception class per raise is too invasive for now (~230 hits).
+    "TRY003", # raise-vanilla-args
+    "TRY002", # raise-vanilla-class
+]
 
 select = [
     "F",   # pyflakes
@@ -90,7 +89,7 @@ select = [
 #    "C90", # mccabe
     "I",   # isort
     "UP",  # pyupgrade
-#    "S",   # flake8-bandit
+    "S",   # flake8-bandit
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
     "PT", # flake8-pytest-style
@@ -105,7 +104,7 @@ select = [
     "PLE", # pylint-error
     "PLW", # pylint-warning
     "PLR", # pylint-refactor
-#    "TRY", # tryceratops
+    "TRY", # tryceratops
     "FAST", # fastapi
 #    "PERF", # perflint
     "FURB", # refurb
@@ -116,11 +115,19 @@ select = [
 extend-immutable-calls = ["fastapi.Depends", "fastapi.params.Depends", "fastapi.Query", "fastapi.params.Query", "fastapi.File"]
 
 [tool.ruff.lint.per-file-ignores]
-# PLR, PLW: Each individual stager, listener, and module lacks tests, so it is not worth the
-# risk to manually refactor them until there are tests in place for them.
-"empire/server/listeners/*" = ["PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "PLW2901"]
-"empire/server/stagers/*" = ["PLR0911", "PLR0912", "PLR0915"]
-"empire/server/modules/*" = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
+# listeners/stagers/modules are untested payload-generation files (the payload
+# runs on the victim, not the server), so:
+#   PLR/PLW - complexity warnings not worth refactoring until tests exist
+#   S104 - listeners bind all interfaces by design
+#   S108 - /tmp paths are victim-side payload options (server build dirs use tempfile)
+#   S110 - try/except/pass in emitted agent logic
+#   S311 - non-crypto/cosmetic RNG (server keys/nonces/session-ids use secrets)
+#   S602/S603/S607 - subprocess spawns compilers/tools to build payloads
+#   S608 - SQL baked into emitted payload, not server queries
+#   TRY301 - risky to refactor untested payload-gen (modules only)
+"empire/server/listeners/*" = ["PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "PLW2901", "S104", "S108", "S311"]
+"empire/server/stagers/*" = ["PLR0911", "PLR0912", "PLR0915", "S108", "S311", "S602", "S603", "S607"]
+"empire/server/modules/*" = ["PLR0911", "PLR0912", "PLR0913", "PLR0915", "S108", "S110", "S311", "S602", "S608", "TRY301"]
 
 # It's hard to limit arguments on the endpoint functions.
 "empire/server/api/*" = ["PLR0913"]
@@ -138,11 +145,24 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.params.Depends", "fastapi.
 # the code base.
 "empire/server/api/app.py" = ["PLC0415"]
 "empire/server/api/v2/shared_dependencies.py" = ["PLC0415"]
-"empire/server/server.py" = ["PLC0415"]
-# Alembic imports are deferred to avoid circular deps with env.py;
-# startup_db and backup_db have many branches/statements due to
-# schema setup, Alembic init, and multi-backend backup logic.
-"empire/server/core/db/base.py" = ["PLC0415", "PLR0911", "PLR0912", "PLR0915"]
+# S603/S607: server.py spawns subprocesses to launch supporting services.
+"empire/server/server.py" = ["PLC0415", "S603", "S607"]
+# Deferred alembic imports (PLC0415) + many branches in startup/backup (PLR).
+# S603: mysqldump backups. S608: schema query from the server's own configured DB name.
+"empire/server/core/db/base.py" = ["PLC0415", "PLR0911", "PLR0912", "PLR0915", "S603", "S608"]
+
+# Intentional S findings in server code (same C2 rationale as the block above):
+"empire/server/api/v2/listener/listener_dto.py" = ["S104"]  # listener bind default
+"empire/server/core/config/config_manager.py" = ["S104"]  # API bind default
+"empire/server/core/agent_communication_service.py" = ["S104"]  # client_ip placeholder, not a bind
+# subprocess spawns for payload compilers/tooling (S602/S603/S607):
+"empire/server/core/dotnet.py" = ["S603"]
+"empire/server/core/go.py" = ["S603", "S607"]
+"empire/server/core/obfuscation_service.py" = ["S602"]
+"empire/server/core/stager_generation_service.py" = ["S603", "S607"]
+"empire/server/utils/data_util.py" = ["S602", "S607"]
+"empire/server/utils/file_util.py" = ["S603"]
+"empire/server/utils/shellcode_compiler.py" = ["S603"]
 
 # A few imports should be local because they need to be reset between tests.
 "empire/test/conftest.py" = ["PLC0415"]

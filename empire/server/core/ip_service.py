@@ -3,6 +3,7 @@ import typing
 
 import netaddr
 from netaddr.ip.sets import IPSet
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from empire.server.core.db import models
@@ -26,7 +27,7 @@ class IpService:
         )
 
         with SessionLocal.begin() as db:
-            self.ip_filtering = db.query(models.Config.ip_filtering).first()[0]
+            self.ip_filtering = db.scalar(select(models.Config.ip_filtering))
             self.deny_list = self._to_ip_set(self.get_all(db, IpList.deny))
             self.allow_list = self._to_ip_set(self.get_all(db, IpList.allow))
 
@@ -79,16 +80,16 @@ class IpService:
 
     @staticmethod
     def get_all(db: Session, ip_list: IpList = None) -> list[models.IP]:
-        query = db.query(models.IP)
+        stmt = select(models.IP)
 
         if ip_list:
-            query = query.filter(models.IP.list == ip_list)
+            stmt = stmt.where(models.IP.list == ip_list)
 
-        return query.all()
+        return db.scalars(stmt).all()
 
     @staticmethod
     def get_by_id(db: Session, uid: int):
-        return db.query(models.IP).filter(models.IP.id == uid).first()
+        return db.scalars(select(models.IP).where(models.IP.id == uid)).first()
 
     def create_ip(self, db: Session, ip_address: str, description: str, list: str):
         db_ip = models.IP(ip_address=ip_address, description=description, list=list)
@@ -101,7 +102,7 @@ class IpService:
         db.delete(db_ip)
 
     def toggle_ip_filtering(self, db: Session, enable: bool):
-        db.query(models.Config).update({"ip_filtering": enable})
+        db.execute(update(models.Config).values(ip_filtering=enable))
         self.ip_filtering = enable
 
     def is_ip_allowed_hook(self, db: Session, agent: models.Agent):

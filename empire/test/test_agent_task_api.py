@@ -881,6 +881,33 @@ def test_get_tasks_for_agent_through_all_endpoint(
     assert all(x["agent_id"] == agent for x in response.json()["records"])
 
 
+def test_get_tasks_for_agent_with_include_original_output(
+    client, admin_auth_header, agent, agent_task, session_local, models
+):
+    """Regression: `include_original_output=true` must `undefer` the
+    `original_output` column without raising. The previous code referenced
+    a nonexistent attribute (`output_original`) which would have surfaced
+    as `AttributeError` at query-build time.
+    """
+    expected = "captured original output"
+    with session_local.begin() as db:
+        task = (
+            db.query(models.AgentTask)
+            .filter_by(agent_id=agent, id=agent_task["id"])
+            .first()
+        )
+        task.original_output = expected
+
+    response = client.get(
+        f"/api/v2/agents/{agent}/tasks",
+        headers=admin_auth_header,
+        params={"include_original_output": "true"},
+    )
+    assert response.status_code == status.HTTP_200_OK
+    record = next(r for r in response.json()["records"] if r["id"] == agent_task["id"])
+    assert record["original_output"] == expected
+
+
 def test_get_task_for_agent_agent_not_found(client, admin_auth_header, agent):
     response = client.get("/api/v2/agents/abc/tasks/1", headers=admin_auth_header)
     assert response.status_code == status.HTTP_404_NOT_FOUND

@@ -5,10 +5,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from empire.server.core.config.config_manager import empire_config
 from empire.server.core.db import models
+from empire.server.core.exceptions import ModuleExecutionException
 from empire.server.utils.option_util import set_options, validate_options
 
 log = logging.getLogger(__name__)
@@ -32,15 +34,17 @@ class StagerService:
 
     @staticmethod
     def get_all(db: Session):
-        return db.query(models.Stager).all()
+        return db.scalars(select(models.Stager)).all()
 
     @staticmethod
     def get_by_id(db: Session, uid: int):
-        return db.query(models.Stager).filter(models.Stager.id == uid).first()
+        return db.scalars(select(models.Stager).where(models.Stager.id == uid)).first()
 
     @staticmethod
     def get_by_name(db: Session, name: str):
-        return db.query(models.Stager).filter(models.Stager.name == name).first()
+        return db.scalars(
+            select(models.Stager).where(models.Stager.name == name)
+        ).first()
 
     def validate_stager_options(
         self, db: Session, template: str, params: dict
@@ -161,7 +165,20 @@ class StagerService:
         return self._persist_updated_stager(db, db_stager, template_instance, generated)
 
     def generate_stager(self, template_instance):
-        resp = template_instance.generate()
+        try:
+            resp = template_instance.generate()
+        except ModuleExecutionException as e:
+            # Convert compile/subprocess failures to a structured (None, err)
+            # result so the API surfaces a 400 with the message rather than a
+            # 500 stack trace. exc_info=True preserves the chained subprocess
+            # context (rc, cmd, stderr) for empire-side debugging.
+            log.error(
+                "Stager generation failed for template %s: %s",
+                type(template_instance).__name__,
+                e,
+                exc_info=True,
+            )
+            return None, str(e)
 
         # todo generate should return error response much like listener validate
         #  options should.
@@ -174,10 +191,21 @@ class StagerService:
         file_name = (
             empire_config.directories.downloads / "generated-stagers" / file_name
         )
-        file_name.parent.mkdir(parents=True, exist_ok=True)
-        mode = "w" if isinstance(resp, str) else "wb"
-        with file_name.open(mode) as f:
-            f.write(resp)
+        try:
+            file_name.parent.mkdir(parents=True, exist_ok=True)
+            mode = "w" if isinstance(resp, str) else "wb"
+            with file_name.open(mode) as f:
+                f.write(resp)
+        except OSError as write_err:
+            log.error(
+                "Stager generation for %s succeeded but writing output failed "
+                "(path=%s): %s",
+                type(template_instance).__name__,
+                file_name,
+                write_err,
+                exc_info=True,
+            )
+            return None, f"Failed to write generated stager to disk: {write_err}"
 
         return file_name, None
 

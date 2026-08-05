@@ -2,6 +2,8 @@ import logging
 import socket
 import subprocess
 
+from sqlalchemy import select
+
 from empire.server.core.db import models
 from empire.server.core.db.base import SessionLocal
 
@@ -18,7 +20,7 @@ def get_config(fields):
     """
     with SessionLocal.begin() as db:
         results = []
-        config = db.query(models.Config).first()
+        config = db.scalars(select(models.Config)).first()
 
         for field in fields.split(","):
             results.append(config[field.strip()])
@@ -33,11 +35,11 @@ def get_listener_options(listener_name):
     """
     try:
         with SessionLocal() as db:
-            return (
-                db.query(models.Listener.options)
-                .filter(models.Listener.name == listener_name)
-                .first()
-            )
+            return db.execute(
+                select(models.Listener.options).where(
+                    models.Listener.name == listener_name
+                )
+            ).first()
 
     except Exception:
         return None
@@ -46,11 +48,11 @@ def get_listener_options(listener_name):
 def get_host_address(listener_name):
     try:
         with SessionLocal() as db:
-            return (
-                db.query(models.Listener.host_address)
-                .filter(models.Listener.name == listener_name)
-                .first()
-            )[0]
+            return db.scalar(
+                select(models.Listener.host_address).where(
+                    models.Listener.name == listener_name
+                )
+            )
 
     except Exception:
         return None

@@ -773,7 +773,7 @@ class Listener:
 
                 log.error("Unable to determine the language for the agent")
         except Exception:
-            log.error(f'Listener "{name}" failed to start')
+            log.exception(f'Listener "{name}" failed to start')
             return False
 
     def shutdown(self):

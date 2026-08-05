@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ValidationError, model_validator
+from sqlalchemy import select
 
 from empire.server.core.config.config_manager import empire_config
 from empire.server.core.config.data_manager import sync_plugin_registry
@@ -61,10 +62,10 @@ class PluginRegistryService:
         registries = empire_config.plugin_marketplace.registries
         to_add = []
         for r in registries:
-            if (
-                db.query(models.PluginRegistry)
-                .filter(models.PluginRegistry.name == r.name)
-                .first()
+            if db.scalar(
+                select(models.PluginRegistry).where(
+                    models.PluginRegistry.name == r.name
+                )
             ):
                 continue
 
@@ -81,7 +82,9 @@ class PluginRegistryService:
             try:
                 registry = PluginRegistry.model_validate(registry_data)
             except ValidationError as e:
-                log.error(f"Plugin registry {r.name} has invalid schema: {e.errors()}")
+                log.exception(
+                    f"Plugin registry {r.name} has invalid schema: {e.errors()}"
+                )
                 continue
 
             if registry.schema_version != SCHEMA_VERSION:
@@ -103,7 +106,7 @@ class PluginRegistryService:
         db.flush()
 
     def get_marketplace(self, db):
-        registries = db.query(models.PluginRegistry).all()
+        registries = db.scalars(select(models.PluginRegistry)).all()
         installed_plugins = self.plugin_service.get_all(db)
         installed_plugins = {p.db_plugin.name: p.db_plugin for p in installed_plugins}
         merged = {}

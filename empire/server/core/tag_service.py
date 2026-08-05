@@ -1,7 +1,7 @@
 import logging
 import typing
 
-from sqlalchemy import func, or_
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from empire.server.api.v2.shared_dto import OrderDirection
@@ -30,7 +30,7 @@ class TagService:
         self.main_menu = main_menu
 
     def get_by_id(self, db: Session, tag_id: int):
-        return db.query(models.Tag).filter(models.Tag.id == tag_id).first()
+        return db.scalars(select(models.Tag).where(models.Tag.id == tag_id)).first()
 
     def get_all(  # noqa: PLR0913 PLR0912
         self,
@@ -42,22 +42,22 @@ class TagService:
         order_by: TagOrderOptions = TagOrderOptions.updated_at,
         order_direction: OrderDirection = OrderDirection.desc,
     ):
-        query = db.query(models.Tag, func.count(models.Tag.id).over().label("total"))
+        stmt = select(models.Tag, func.count(models.Tag.id).over().label("total"))
 
         tag_types = tag_types or []
         sub = []
         if TagSourceFilter.agent_task in tag_types:
-            sub.append(db.query(models.agent_task_tag_assc.c.tag_id.label("tag_id")))
+            sub.append(select(models.agent_task_tag_assc.c.tag_id.label("tag_id")))
         if TagSourceFilter.plugin_task in tag_types:
-            sub.append(db.query(models.plugin_task_tag_assc.c.tag_id.label("tag_id")))
+            sub.append(select(models.plugin_task_tag_assc.c.tag_id.label("tag_id")))
         if TagSourceFilter.agent in tag_types:
-            sub.append(db.query(models.agent_tag_assc.c.tag_id.label("tag_id")))
+            sub.append(select(models.agent_tag_assc.c.tag_id.label("tag_id")))
         if TagSourceFilter.listener in tag_types:
-            sub.append(db.query(models.listener_tag_assc.c.tag_id.label("tag_id")))
+            sub.append(select(models.listener_tag_assc.c.tag_id.label("tag_id")))
         if TagSourceFilter.download in tag_types:
-            sub.append(db.query(models.download_tag_assc.c.tag_id.label("tag_id")))
+            sub.append(select(models.download_tag_assc.c.tag_id.label("tag_id")))
         if TagSourceFilter.credential in tag_types:
-            sub.append(db.query(models.credential_tag_assc.c.tag_id.label("tag_id")))
+            sub.append(select(models.credential_tag_assc.c.tag_id.label("tag_id")))
 
         subquery = None
         if sub:
@@ -67,10 +67,10 @@ class TagService:
             subquery = subquery.subquery()
 
         if subquery is not None:
-            query = query.join(subquery, subquery.c.tag_id == models.Tag.id)
+            stmt = stmt.join(subquery, subquery.c.tag_id == models.Tag.id)
 
         if q:
-            query = query.filter(
+            stmt = stmt.where(
                 or_(
                     models.Tag.name.like(f"%{q}%"),
                 )
@@ -84,14 +84,14 @@ class TagService:
             order_by_prop = models.Tag.updated_at
 
         if order_direction == OrderDirection.asc:
-            query = query.order_by(order_by_prop.asc())
+            stmt = stmt.order_by(order_by_prop.asc())
         else:
-            query = query.order_by(order_by_prop.desc())
+            stmt = stmt.order_by(order_by_prop.desc())
 
         if limit > 0:
-            query = query.limit(limit).offset(offset)
+            stmt = stmt.limit(limit).offset(offset)
 
-        results = query.all()
+        results = db.execute(stmt).all()
 
         total = 0 if not results else results[0].total
         results = [x[0] for x in results]
@@ -138,4 +138,4 @@ class TagService:
     ):
         if tag_id in [tag.id for tag in taggable.tags]:
             taggable.tags = [tag for tag in taggable.tags if tag.id != tag_id]
-            db.query(models.Tag).filter(models.Tag.id == tag_id).delete()
+            db.execute(delete(models.Tag).where(models.Tag.id == tag_id))

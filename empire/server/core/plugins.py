@@ -2,6 +2,8 @@ import logging
 import typing
 from typing import Any
 
+from sqlalchemy import select
+
 from empire.server.core.db import models
 from empire.server.core.db.models import PluginInfo
 from empire.server.core.exceptions import PluginValidationException
@@ -88,7 +90,9 @@ class BasePlugin:
         pass
 
     def get_db_plugin(self, db) -> models.Plugin | None:
-        return db.query(models.Plugin).filter(models.Plugin.id == self.info.id).first()
+        return db.scalars(
+            select(models.Plugin).where(models.Plugin.id == self.info.id)
+        ).first()
 
     def current_settings(self, db) -> dict[str, Any]:
         return self.get_db_plugin(db).settings

@@ -162,6 +162,126 @@ def test_update_user_as_not_admin_me(client, test_user_auth_header, test_user_id
     )
 
 
+def _assert_empireadmin_is_only_enabled_admin(client, admin_auth_header):
+    users = client.get("/api/v2/users", headers=admin_auth_header).json()["records"]
+    enabled_admins = [u for u in users if u["enabled"] and u["is_admin"]]
+    assert len(enabled_admins) == 1, (
+        f"precondition violated: expected only empireadmin enabled, got {enabled_admins}"
+    )
+    assert enabled_admins[0]["username"] == "empireadmin"
+
+
+def test_update_user_self_disable_last_admin_blocked(client, admin_auth_header):
+    _assert_empireadmin_is_only_enabled_admin(client, admin_auth_header)
+
+    response = client.put(
+        "/api/v2/users/1",
+        headers=admin_auth_header,
+        json={"username": "rename-attempt", "enabled": False, "is_admin": True},
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert (
+        response.json()["detail"] == "Cannot disable or demote the last enabled admin."
+    )
+
+    after = client.get("/api/v2/users/1", headers=admin_auth_header).json()
+    assert after["username"] == "empireadmin"
+    assert after["enabled"] is True
+    assert after["is_admin"] is True
+
+
+def test_update_user_self_demote_last_admin_blocked(client, admin_auth_header):
+    _assert_empireadmin_is_only_enabled_admin(client, admin_auth_header)
+
+    response = client.put(
+        "/api/v2/users/1",
+        headers=admin_auth_header,
+        json={"username": "rename-attempt", "enabled": True, "is_admin": False},
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert (
+        response.json()["detail"] == "Cannot disable or demote the last enabled admin."
+    )
+
+    after = client.get("/api/v2/users/1", headers=admin_auth_header).json()
+    assert after["username"] == "empireadmin"
+    assert after["enabled"] is True
+    assert after["is_admin"] is True
+
+
+def test_update_user_disable_non_admin_allowed(client, admin_auth_header, test_user_id):
+    response = client.put(
+        f"/api/v2/users/{test_user_id}",
+        headers=admin_auth_header,
+        json={
+            "username": f"regular-user-{random_string(4)}",
+            "enabled": False,
+            "is_admin": False,
+        },
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["enabled"] is False
+
+
+def test_update_user_demote_admin_with_other_admins_allowed(client, admin_auth_header):
+    second_admin = client.post(
+        "/api/v2/users/",
+        headers=admin_auth_header,
+        json={
+            "username": f"second-admin-{random_string(4)}",
+            "password": "hunter2",
+            "is_admin": True,
+        },
+    )
+    assert second_admin.status_code == status.HTTP_201_CREATED
+    second_admin_id = second_admin.json()["id"]
+    second_admin_name = second_admin.json()["username"]
+
+    response = client.put(
+        f"/api/v2/users/{second_admin_id}",
+        headers=admin_auth_header,
+        json={"username": second_admin_name, "enabled": True, "is_admin": False},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["is_admin"] is False
+
+
+def test_update_user_reenable_disabled_admin_allowed(client, admin_auth_header):
+    created = client.post(
+        "/api/v2/users/",
+        headers=admin_auth_header,
+        json={
+            "username": f"reenable-admin-{random_string(4)}",
+            "password": "hunter2",
+            "is_admin": True,
+        },
+    )
+    assert created.status_code == status.HTTP_201_CREATED
+    user_id = created.json()["id"]
+    username = created.json()["username"]
+
+    disabled = client.put(
+        f"/api/v2/users/{user_id}",
+        headers=admin_auth_header,
+        json={"username": username, "enabled": False, "is_admin": True},
+    )
+    assert disabled.status_code == status.HTTP_200_OK
+    assert disabled.json()["enabled"] is False
+
+    reenabled = client.put(
+        f"/api/v2/users/{user_id}",
+        headers=admin_auth_header,
+        json={"username": username, "enabled": True, "is_admin": True},
+    )
+    assert reenabled.status_code == status.HTTP_200_OK
+    assert reenabled.json()["enabled"] is True
+    assert reenabled.json()["is_admin"] is True
+
+
 def test_update_user_password_not_me(client, test_user_auth_header):
     response = client.put(
         "/api/v2/users/1/password",
@@ -241,6 +361,26 @@ def test_upload_user_avatar_not_image(client, admin_auth_header):
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert response.json()["detail"] == "File must be an image."
+
+
+def test_upload_user_avatar_blocks_path_traversal(client, admin_auth_header):
+    escaped = Path("/tmp/empire_avatar_traversal.png")
+    escaped.unlink(missing_ok=True)
+    response = client.post(
+        "/api/v2/users/1/avatar",
+        headers=admin_auth_header,
+        files={
+            "file": (
+                "../../../../../../../../tmp/empire_avatar_traversal.png",
+                Path("./empire/test/avatar.png").read_bytes(),
+                "image/png",
+            )
+        },
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert response.json()["detail"] == "Invalid filename."
+    assert not escaped.exists(), "traversal avatar escaped the downloads directory"
 
 
 def test_upload_user_avatar(client, admin_auth_header):

@@ -5,6 +5,7 @@ import typing
 
 import python_obfuscator
 from python_obfuscator.techniques import one_liner, variable_renamer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from empire.server.core.config.config_manager import empire_config
@@ -24,17 +25,19 @@ class ObfuscationService:
 
     @staticmethod
     def get_all_keywords(db: Session):
-        return db.query(models.Keyword).all()
+        return db.scalars(select(models.Keyword)).all()
 
     @staticmethod
     def get_keyword_by_id(db: Session, uid: int):
-        return db.query(models.Keyword).filter(models.Keyword.id == uid).first()
+        return db.scalars(
+            select(models.Keyword).where(models.Keyword.id == uid)
+        ).first()
 
     @staticmethod
     def get_by_keyword(db: Session, keyword: str):
-        return (
-            db.query(models.Keyword).filter(models.Keyword.keyword == keyword).first()
-        )
+        return db.scalars(
+            select(models.Keyword).where(models.Keyword.keyword == keyword)
+        ).first()
 
     @staticmethod
     def delete_keyword(db: Session, keyword: models.Keyword):
@@ -67,15 +70,15 @@ class ObfuscationService:
         return db_keyword, None
 
     def get_all_obfuscation_configs(self, db: Session):
-        return db.query(models.ObfuscationConfig).all()
+        return db.scalars(select(models.ObfuscationConfig)).all()
 
     @staticmethod
     def get_obfuscation_config(db: Session, language: str):
-        return (
-            db.query(models.ObfuscationConfig)
-            .filter(models.ObfuscationConfig.language == language)
-            .first()
-        )
+        return db.scalars(
+            select(models.ObfuscationConfig).where(
+                models.ObfuscationConfig.language == language
+            )
+        ).first()
 
     @staticmethod
     def update_obfuscation_config(
@@ -120,6 +123,11 @@ class ObfuscationService:
             install_path = self.main_menu.install_path
             toObfuscateFile.seek(0)
             try:
+                # shell=True with an interpolated command line (S602): the only
+                # non-static input is obfuscation_command, which comes from the
+                # authenticated operator's ObfuscationConfig (server-side, trusted),
+                # not from agents or the network. If that ever becomes settable by a
+                # lower-trust principal this turns into command injection.
                 result = subprocess.run(
                     f'{data_util.get_powershell_name()} -C \'$ErrorActionPreference = "SilentlyContinue";Import-Module {install_path}/data/Invoke-Obfuscation/Invoke-Obfuscation.psd1;Invoke-Obfuscation -ScriptPath {toObfuscateFile.name} -Command "{self._convert_obfuscation_command(obfuscation_command)}" -Quiet | Out-File -Encoding ASCII {obfuscatedFile.name}\'',
                     shell=True,
@@ -129,7 +137,7 @@ class ObfuscationService:
                     capture_output=True,
                 )
             except subprocess.TimeoutExpired:
-                log.error(
+                log.exception(
                     "Obfuscation subprocess timed out after %ds. "
                     "Consider pre-obfuscating modules or increasing the timeout.",
                     timeout,
@@ -161,7 +169,7 @@ class ObfuscationService:
     def obfuscate_keywords(self, data):
         if data:
             with SessionLocal.begin() as db:
-                keywords = db.query(models.Keyword).all()
+                keywords = db.scalars(select(models.Keyword)).all()
 
                 for keyword in keywords:
                     data = data.replace(keyword.keyword, keyword.replacement)

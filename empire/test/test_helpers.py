@@ -1,4 +1,5 @@
 import base64
+import hashlib
 from datetime import datetime
 from pathlib import Path
 
@@ -9,17 +10,28 @@ from empire.server.common import helpers
 
 @pytest.mark.slow
 def test_dynamic_powershell(install_path):
+    # sha256 of the expected output. The dep-walk now emits functions in
+    # deterministic order across Python invocations (was hash-randomized
+    # via set iteration), which lets us lock the bytes here — this
+    # catches any change to the algorithm, not just length drift.
+    # Generated post-refactor, so it locks forward stability rather than
+    # byte-equivalence with the pre-refactor (non-deterministic) output.
+    # Update intentionally if the dependency-walk algorithm is changed.
+    expected_sha256 = "f8e0138340d389f2e9047af983fe4d735bfccf4450337901c2a183ac31ecbc1e"
     expected_len = 96863
 
+    # Open with explicit UTF-8 so the sha256 lock is stable across
+    # platforms (Path.open() defaults to the system's locale encoding).
     with (
         Path(install_path)
         / "data/module_source/situational_awareness/network/powerview.ps1"
-    ).open() as file:
+    ).open(encoding="utf-8") as file:
         script = file.read()
         new_script = helpers.generate_dynamic_powershell_script(
             script, "Find-LocalAdminAccess"
         )
     assert len(new_script) == expected_len
+    assert hashlib.sha256(new_script.encode()).hexdigest() == expected_sha256
 
 
 class TestValidateIP:

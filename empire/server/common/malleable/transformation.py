@@ -3,12 +3,9 @@ from __future__ import absolute_import
 import ast
 import base64
 import os
+import urllib.parse
 
-import six.moves.urllib.error
-import six.moves.urllib.parse
-import six.moves.urllib.request
 from pyparsing import *
-from six.moves import range
 
 from .utility import MalleableError, MalleableObject, MalleableUtil
 
@@ -282,7 +279,7 @@ class Transform(MalleableObject):
         def base64url_transform(data):
             if isinstance(data, str):
                 data = data.encode("latin-1")
-            r = six.moves.urllib.parse.quote(base64.b64encode(data))
+            r = urllib.parse.quote(base64.b64encode(data))
             return r.encode("Latin-1")
 
         def base64url_transform_r(data):
@@ -292,7 +289,7 @@ class Transform(MalleableObject):
             missing_padding = len(data) % 4
             if missing_padding:
                 data += b"=" * (4 - missing_padding)
-            r = base64.b64decode(six.moves.urllib.parse.unquote_to_bytes(data))
+            r = base64.b64decode(urllib.parse.unquote_to_bytes(data))
             return r
 
         self.generate_python = (

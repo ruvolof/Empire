@@ -4,7 +4,7 @@ from json.decoder import JSONDecodeError
 
 import jq
 from prettytable import PrettyTable
-from sqlalchemy import and_
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from empire.server.core.db import models
@@ -56,12 +56,11 @@ def ps_hook(db: Session, task: models.AgentTask):
             )
             return
 
-    existing_processes = (
-        db.query(models.HostProcess.process_id)
-        .filter(models.HostProcess.host_id == task.agent.host_id)
-        .all()
-    )
-    existing_processes = [p[0] for p in existing_processes]
+    existing_processes = db.scalars(
+        select(models.HostProcess.process_id).where(
+            models.HostProcess.host_id == task.agent.host_id
+        )
+    ).all()
 
     for process in output:
         process_name = process.get("CMD") or process.get("ProcessName") or ""
@@ -82,16 +81,14 @@ def ps_hook(db: Session, task: models.AgentTask):
                 )
             # update existing process
             elif int(process_id) in existing_processes:
-                db_process: models.HostProcess = (
-                    db.query(models.HostProcess)
-                    .filter(
+                db_process: models.HostProcess = db.scalars(
+                    select(models.HostProcess).where(
                         and_(
                             models.HostProcess.host_id == task.agent.host_id,
                             models.HostProcess.process_id == process_id,
                         )
                     )
-                    .first()
-                )
+                ).first()
                 if not db_process.agent:
                     db_process.architecture = arch
                     db_process.process_name = process_name
@@ -100,16 +97,14 @@ def ps_hook(db: Session, task: models.AgentTask):
     for process in existing_processes:
         # mark processes that are no longer running stale
         if process not in [int(p.get("PID")) for p in output]:
-            db_process: models.HostProcess | None = (
-                db.query(models.HostProcess)
-                .filter(
+            db_process: models.HostProcess | None = db.scalars(
+                select(models.HostProcess).where(
                     and_(
                         models.HostProcess.host_id == task.agent.host_id,
                         models.HostProcess.process_id == process,
                     )
                 )
-                .first()
-            )
+            ).first()
             db_process.stale = True
 
 

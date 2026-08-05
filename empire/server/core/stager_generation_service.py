@@ -1,8 +1,9 @@
 import base64
 import logging
-import random
+import secrets
 import shutil
 import subprocess
+import tempfile
 import typing
 from itertools import cycle
 from pathlib import Path
@@ -13,6 +14,7 @@ except ModuleNotFoundError:
     donut = None
 
 import macholib.MachO
+from sqlalchemy import select
 
 from empire.server.common import helpers, packets
 from empire.server.core.db import models
@@ -95,9 +97,9 @@ class StagerGenerationService:
         with SessionLocal.begin() as db:
             bypasses_parsed = []
             for bypass in bypasses.split(" "):
-                db_bypass = (
-                    db.query(models.Bypass).filter(models.Bypass.name == bypass).first()
-                )
+                db_bypass = db.scalars(
+                    select(models.Bypass).where(models.Bypass.name == bypass)
+                ).first()
                 if db_bypass:
                     if db_bypass.language == language:
                         bypasses_parsed.append(db_bypass.code)
@@ -308,7 +310,7 @@ class StagerGenerationService:
     def _get_request_uri(self, listener) -> str:
         profile = listener.options["DefaultProfile"]["Value"]
         uris = [uri.strip() for uri in profile.split("|")[0].split(",") if uri.strip()]
-        request_uri = random.choice(uris) if uris else "/"
+        request_uri = secrets.choice(uris) if uris else "/"
         if not request_uri.startswith("/"):
             request_uri = f"/{request_uri}"
         return request_uri
@@ -606,7 +608,9 @@ class StagerGenerationService:
             if not app_name:
                 app_name = "launcher"
 
-            tmpdir = Path(f"/tmp/application/{app_name}.app")
+            build_root = Path(tempfile.mkdtemp(prefix="empire-launcher-"))
+            app_root = build_root / "application"
+            tmpdir = app_root / f"{app_name}.app"
             shutil.copytree(app_dir, tmpdir)
             macos_dir = tmpdir / "Contents/MacOS"
             with (macos_dir / "launcher").open("wb") as f:
@@ -685,13 +689,12 @@ class StagerGenerationService:
 """
             (tmpdir / "Contents/Info.plist").write_text(appPlist)
 
-            shutil.make_archive("/tmp/launcher", "zip", "/tmp/application")
-            shutil.rmtree("/tmp/application")
-
-            launcher_zip = Path("/tmp/launcher.zip")
-            zipbundle = launcher_zip.read_bytes()
-            launcher_zip.unlink()
-            return zipbundle
+            launcher_base = build_root / "launcher"
+            shutil.make_archive(str(launcher_base), "zip", app_root)
+            try:
+                return launcher_base.with_suffix(".zip").read_bytes()
+            finally:
+                shutil.rmtree(build_root, ignore_errors=True)
 
         log.error("Unable to patch application")
         return None
@@ -810,14 +813,7 @@ $filename = "FILE_UPLOAD_FULL_PATH_GOES_HERE"
 
         return None
 
-    def generate_go_stageless(self, options, listener_name=None):
-        if not listener_name:
-            listener_name = options["Listener"]["Value"]
-
-        active_listener = self.listener_service.get_active_listener_by_name(
-            listener_name
-        )
-
+    def _build_template_vars(self, active_listener):
         session_id = "00000000"
         staging_key = active_listener.options["StagingKey"]["Value"]
         delay = active_listener.options["DefaultDelay"]["Value"]
@@ -827,7 +823,7 @@ $filename = "FILE_UPLOAD_FULL_PATH_GOES_HERE"
         working_hours = active_listener.options["WorkingHours"]["Value"]
         lost_limit = active_listener.options["DefaultLostLimit"]["Value"]
 
-        template_vars = {
+        return {
             "PROFILE": profile,
             "HOST": active_listener.host_address,
             "SESSION_ID": session_id,
@@ -852,6 +848,16 @@ $filename = "FILE_UPLOAD_FULL_PATH_GOES_HERE"
                 active_listener.server_public_cert_key
             ).decode("UTF-8"),
         }
+
+    def generate_go_stageless(self, options, listener_name=None):
+        if not listener_name:
+            listener_name = options["Listener"]["Value"]
+
+        active_listener = self.listener_service.get_active_listener_by_name(
+            listener_name
+        )
+
+        template_vars = self._build_template_vars(active_listener)
 
         return self.main_menu.go_compiler.compile_stager(
             template_vars, "stager", goos="windows", goarch="amd64"

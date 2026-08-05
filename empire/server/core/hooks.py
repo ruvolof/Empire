@@ -35,9 +35,10 @@ async def _run_async_hook(hook: Callable, *args) -> None:
 
     Async hooks are dispatched via loop.create_task(), which means they run
     after the caller's `with SessionLocal.begin() as db:` block has already
-    exited. Passing the caller's session directly is unsafe: any db.query()
-    call inside the hook triggers SQLAlchemy autobegin, re-acquiring a pool
-    connection with no code to release it — exhausting the pool under load.
+    exited. Passing the caller's session directly is unsafe: any DB call inside
+    the hook (e.g. db.scalars(select(...)), db.execute(...)) triggers SQLAlchemy
+    autobegin, re-acquiring a pool connection with no code to release it —
+    exhausting the pool under load.
 
     Opens a fresh SessionLocal session, merges any ORM objects from the
     caller's args into it, and calls the hook. The session commits and closes

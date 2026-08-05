@@ -14,6 +14,11 @@ services:
     image: bcsecurity/empire-test
     entrypoint: /bin/bash
     platform: linux/amd64
+    # Forwarded from the CI step env so the in-container Empire Compiler
+    # download authenticates against the GitHub API (avoids the 60 req/hr
+    # unauthenticated rate limit). Empty/unset is fine for local runs.
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     command: >
       -c "DATABASE_USE=sqlite poetry run python -m pytest . --nodocker && sed -i
       's/localhost:3306/db:3306/g' empire/test/test_server_config.yaml && DATABASE_USE=mysql

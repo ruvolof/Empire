@@ -1,5 +1,6 @@
 import typing
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from empire.server.core.db import models
@@ -14,8 +15,8 @@ class HostService:
 
     @staticmethod
     def get_all(db: Session):
-        return db.query(models.Host).all()
+        return db.scalars(select(models.Host)).all()
 
     @staticmethod
     def get_by_id(db: Session, uid: int):
-        return db.query(models.Host).filter(models.Host.id == uid).first()
+        return db.scalars(select(models.Host).where(models.Host.id == uid)).first()

@@ -13,6 +13,7 @@ empire/server/data/misc/Obfuscated.ps1
 empire/server/data/generated-stagers/*
 empire/server/data/cti**
 empire/server/data/agent/gopire/*.go
+empire/server/data/agent/gopire/vendor/
 
 empire/server/downloads/*
 empire/server/api/static/*

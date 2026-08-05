@@ -18,7 +18,7 @@ Empire is a post-exploitation and adversary emulation framework that is used to 
 ### Features
 - Server/Client Architecture for Multiplayer Support
 - Fully encrypted communications
-- HTTP/S, Malleable HTTP, OneDrive, Dropbox, and PHP Listeners
+- HTTP/S, Malleable HTTP, Foreign, Hop, SMB, and Port Forward Pivot Listeners
 - Massive library (400+) of supported tools in PowerShell, C#, & Python
 - Donut Integration for shellcode generation
 - Modular plugin interface for custom server features
@@ -39,7 +39,7 @@ Empire is a post-exploitation and adversary emulation framework that is used to 
 - Go
 
 ### Modules
-- [Assembly Execution](https://github.com/BC-SECURITY/Empire/blob/master/empire/server/data/module_source/code_execution/Invoke-Assembly.ps1)
+- [Assembly Execution](https://github.com/BC-SECURITY/Empire/blob/main/empire/server/data/module_source/code_execution/Invoke-Assembly.ps1)
 - [BOF Execution](https://github.com/airbus-cert/Invoke-Bof)
 - [Mimikatz](https://github.com/gentilkiwi/mimikatz)
 - [Seatbelt](https://github.com/GhostPack/Seatbelt)

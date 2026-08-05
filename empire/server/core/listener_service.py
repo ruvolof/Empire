@@ -5,8 +5,10 @@ import re
 import typing
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from empire.server.core import protocol_constants as proto
 from empire.server.core.db import models
 from empire.server.core.db.base import SessionLocal
 from empire.server.core.hooks import hooks
@@ -37,15 +39,19 @@ class ListenerService:
 
     @staticmethod
     def get_all(db: Session) -> list[models.Listener]:
-        return db.query(models.Listener).all()
+        return db.scalars(select(models.Listener)).all()
 
     @staticmethod
     def get_by_id(db: Session, uid: int) -> models.Listener | None:
-        return db.query(models.Listener).filter(models.Listener.id == uid).first()
+        return db.scalars(
+            select(models.Listener).where(models.Listener.id == uid)
+        ).first()
 
     @staticmethod
     def get_by_name(db: Session, name: str) -> models.Listener | None:
-        return db.query(models.Listener).filter(models.Listener.name == name).first()
+        return db.scalars(
+            select(models.Listener).where(models.Listener.name == name)
+        ).first()
 
     def get_active_listeners(self):
         return self._active_listeners
@@ -170,7 +176,7 @@ class ListenerService:
             success = template_instance.start()
         except Exception as e:
             msg = f"Failed to start listener '{name}': {e}"
-            log.error(msg)
+            log.exception(msg)
             return None, msg
 
         return self._finish_create(
@@ -213,11 +219,9 @@ class ListenerService:
 
     def start_existing_listeners(self):
         with SessionLocal.begin() as db:
-            listeners = (
-                db.query(models.Listener)
-                .filter(models.Listener.enabled == True)  # noqa: E712
-                .all()
-            )
+            listeners = db.scalars(
+                select(models.Listener).where(models.Listener.enabled.is_(True))
+            ).all()
             for listener in listeners:
                 self.start_existing_listener(db, listener)
 
@@ -302,8 +306,13 @@ class ListenerService:
             if option_name == "StagingKey":
                 # if the staging key isn't 32 characters, assume we're md5 hashing it
                 value = str(value).strip()
-                if len(value) != 32:  # noqa: PLR2004
-                    staging_key_hash = hashlib.md5(value.encode("UTF-8")).hexdigest()
+                if len(value) != proto.STAGING_KEY_LENGTH:
+                    # md5 is required here: its 32-char hex digest derives the
+                    # protocol-required 32-char staging key from a shorter
+                    # passphrase. Not an integrity check.
+                    staging_key_hash = hashlib.md5(  # noqa: S324
+                        value.encode("UTF-8")
+                    ).hexdigest()
                     log.warning(
                         f"Warning: staging key not 32 characters, using hash of staging key instead: {staging_key_hash}"
                     )
