@@ -748,6 +748,7 @@ class Profile(MalleableObject):
             data: pyparsing data
         """
         if data:
+            http_stager_found = False
             for group in [d for d in data if d]:
                 for i in range(0, len(group), 2):
                     item = group[i]
@@ -771,10 +772,13 @@ class Profile(MalleableObject):
                         self.post._parse(arg)
                     elif item.lower() == "http-stager":
                         self.stager._parse(arg)
+                        http_stager_found = True
                     elif item.lower() == "http-config":
                         self.http_config._parse(arg)
                     elif item.lower() == "https-certificate":
                         self.https_certificate._parse(arg)
+            if not http_stager_found:
+                self.stager.add_default_uri()
 
     def _apply_set_directive(self, key: str, raw_value: str) -> None:
         """Classify and apply a top-level `set <key> "<raw_value>";` directive.
