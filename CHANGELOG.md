@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 -   Fixed background jobs for the python agent.
 -   Fixed powershell stager parsing of custom headers.
+-   Fixed custom headers for the http listener powershell stager.
 
 ## [7.0.2] - 2026-09-08
 -   Updated Starkiller to v4.0.3

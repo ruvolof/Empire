@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives import serialization
 
 from empire.server.common import helpers, packets, templating
 from empire.server.common.empire import MainMenu
+from empire.server.listeners.http.listener import parse_custom_headers
 from empire.server.utils import data_util, listener_util
 
 LOG_NAME_PREFIX = __name__
@@ -266,6 +267,8 @@ class Listener:
         staging_key = listener.options["StagingKey"]["Value"]
         workingHours = listener.options["WorkingHours"]["Value"]
         killDate = listener.options["KillDate"]["Value"]
+        customHeaders = profile.split("|")[2:]
+        custom_headers_dict = parse_custom_headers(customHeaders)
         session_cookie = listener.options["Cookie"]["Value"]
 
         # select some random URIs for staging from the main profile
@@ -317,6 +320,7 @@ class Listener:
                 "agent_private_cert_key": private_key_array,
                 "server_public_cert_key": server_public_key_array,
                 "agent_public_cert_key": public_key_array,
+                "custom_headers": custom_headers_dict,
             }
             stager = template.render(template_options)
 
@@ -403,11 +407,14 @@ class Listener:
             )
 
             powershell_array = ",".join(f"0x{b:02x}" for b in raw_key_bytes)
+            profile = self.options["DefaultProfile"]["Value"]
+            custom_headers_dict = parse_custom_headers(profile.split("|")[2:])
             template_options = {
                 "session_cookie": "",
                 "host": self.host_address,
                 "agent_private_cert_key": powershell_array,
                 "agent_public_cert_key": self.agent_public_cert_key,
+                "custom_headers": custom_headers_dict,
             }
 
             return template.render(template_options)

@@ -14,6 +14,7 @@ from empire.server.common import helpers, packets, templating
 from empire.server.common.empire import MainMenu
 from empire.server.core.db import models
 from empire.server.core.db.base import SessionLocal
+from empire.server.listeners.http.listener import parse_custom_headers
 from empire.server.utils import data_util, listener_util
 
 LOG_NAME_PREFIX = __name__
@@ -513,6 +514,8 @@ class Listener:
         workingHours = listenerOptions["WorkingHours"]["Value"]
         killDate = listenerOptions["KillDate"]["Value"]
         host = listenerOptions["Host"]["Value"]
+        customHeaders = profile.split("|")[2:]
+        custom_headers_dict = parse_custom_headers(customHeaders)
 
         # select some random URIs for staging from the main profile
         stage1 = secrets.choice(uris)
@@ -539,6 +542,7 @@ class Listener:
                 "host": host,
                 "stage_1": stage1,
                 "stage_2": stage2,
+                "custom_headers": custom_headers_dict,
                 **cert_key_options,
             }
             stager = template.render(template_options)
@@ -722,9 +726,12 @@ class Listener:
             eng = templating.TemplateEngine(template_path)
             template = eng.get_template("http/http.ps1.j2")
 
+            profile = listenerOptions["DefaultProfile"]["Value"]
+            custom_headers_dict = parse_custom_headers(profile.split("|")[2:])
             template_options = {
                 "session_cookie": listenerOptions["Cookie"]["Value"],
                 "host": self.host_address,
+                "custom_headers": custom_headers_dict,
             }
 
             return template.render(template_options)
